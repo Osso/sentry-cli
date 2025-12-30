@@ -54,12 +54,14 @@ enum IssueCommands {
 
 fn get_client() -> Result<api::Client> {
     let cfg = config::load_config()?;
-    let org = cfg
-        .organization
-        .ok_or_else(|| anyhow::anyhow!("Organization not configured. Run 'sentry config -o <org>' first"))?;
-    let token = cfg
-        .auth_token
-        .ok_or_else(|| anyhow::anyhow!("Auth token not configured. Run 'sentry config -t <token>' or 'sentry-cli login' first"))?;
+    let org = cfg.organization.ok_or_else(|| {
+        anyhow::anyhow!("Organization not configured. Run 'sentry config -o <org>' first")
+    })?;
+    let token = cfg.auth_token.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Auth token not configured. Run 'sentry config -t <token>' or 'sentry-cli login' first"
+        )
+    })?;
     api::Client::new(&org, &token)
 }
 
