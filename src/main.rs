@@ -75,8 +75,6 @@ enum Commands {
     Integration {
         /// Integration slug (e.g., claude-agent-4744fc)
         slug: String,
-        #[command(subcommand)]
-        command: Option<IntegrationCommands>,
     },
 }
 
@@ -107,18 +105,6 @@ enum MonitorCommands {
     },
 }
 
-#[derive(Subcommand)]
-enum IntegrationCommands {
-    /// List API tokens for this integration
-    Tokens,
-    /// Create a new API token
-    CreateToken,
-    /// Delete an API token
-    DeleteToken {
-        /// Token to delete (first 8 chars or full token)
-        token: String,
-    },
-}
 
 fn get_client(site: Option<&str>) -> Result<api::Client> {
     let cfg = config::load_config()?;
@@ -311,78 +297,10 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&integrations)?);
             }
         }
-        Commands::Integration { slug, command } => {
+        Commands::Integration { slug } => {
             let client = get_client(site)?;
-            match command {
-                None => {
-                    let integration = client.get_integration(&slug).await?;
-                    println!("{}", serde_json::to_string_pretty(&integration)?);
-                }
-                Some(IntegrationCommands::Tokens) => {
-                    let tokens = client.get_integration_tokens(&slug).await?;
-                    if let Some(arr) = tokens.as_array() {
-                        if arr.is_empty() {
-                            println!("No API tokens found.");
-                        } else {
-                            for tok in arr {
-                                let token = tok["token"].as_str().unwrap_or("?");
-                                let scopes = tok["scopes"]
-                                    .as_array()
-                                    .map(|s| {
-                                        s.iter()
-                                            .filter_map(|v| v.as_str())
-                                            .collect::<Vec<_>>()
-                                            .join(", ")
-                                    })
-                                    .unwrap_or_default();
-                                // Show first 8 chars + ellipsis
-                                let display = if token.len() > 8 {
-                                    format!("{}...", &token[..8])
-                                } else {
-                                    token.to_string()
-                                };
-                                println!("{}", display);
-                                if !scopes.is_empty() {
-                                    println!("  scopes: {}", scopes);
-                                }
-                            }
-                        }
-                    } else {
-                        println!("{}", serde_json::to_string_pretty(&tokens)?);
-                    }
-                }
-                Some(IntegrationCommands::CreateToken) => {
-                    let result = client.create_integration_token(&slug).await?;
-                    let token = result["token"].as_str().unwrap_or("?");
-                    println!("Created token: {}", token);
-                    println!("(Save this token - it won't be shown again)");
-                }
-                Some(IntegrationCommands::DeleteToken { token }) => {
-                    // If partial token provided, list tokens to find the full one
-                    let full_token = if token.len() < 20 {
-                        let tokens = client.get_integration_tokens(&slug).await?;
-                        tokens
-                            .as_array()
-                            .and_then(|arr| {
-                                arr.iter().find_map(|t| {
-                                    let tok = t["token"].as_str()?;
-                                    if tok.starts_with(&token) {
-                                        Some(tok.to_string())
-                                    } else {
-                                        None
-                                    }
-                                })
-                            })
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("No token found starting with '{}'", token)
-                            })?
-                    } else {
-                        token.clone()
-                    };
-                    client.delete_integration_token(&slug, &full_token).await?;
-                    println!("Deleted token");
-                }
-            }
+            let integration = client.get_integration(&slug).await?;
+            println!("{}", serde_json::to_string_pretty(&integration)?);
         }
     }
 

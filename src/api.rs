@@ -224,64 +224,6 @@ impl Client {
         self.get(&format!("/sentry-apps/{}/", slug)).await
     }
 
-    /// Get integration API tokens
-    pub async fn get_integration_tokens(&self, slug: &str) -> Result<Value> {
-        self.get(&format!(
-            "/sentry-apps/{}/api-tokens/",
-            slug
-        ))
-        .await
-    }
-
-    /// Create a new API token for an integration
-    pub async fn create_integration_token(&self, slug: &str) -> Result<Value> {
-        let url = format!("{}/sentry-apps/{}/api-tokens/", self.base_url, slug);
-
-        let resp = self
-            .send_with_retry(|| {
-                self.http
-                    .post(&url)
-                    .header("Authorization", format!("Bearer {}", self.auth_token))
-                    .header("Content-Type", "application/json")
-                    .send()
-            })
-            .await
-            .context("Failed to send request")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("HTTP {} - {}", status, body);
-        }
-
-        resp.json().await.context("Failed to parse JSON response")
-    }
-
-    /// Delete an integration API token
-    pub async fn delete_integration_token(&self, slug: &str, token: &str) -> Result<()> {
-        let url = format!(
-            "{}/sentry-apps/{}/api-tokens/{}/",
-            self.base_url, slug, token
-        );
-
-        let resp = self
-            .send_with_retry(|| {
-                self.http
-                    .delete(&url)
-                    .header("Authorization", format!("Bearer {}", self.auth_token))
-                    .send()
-            })
-            .await
-            .context("Failed to send request")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("HTTP {} - {}", status, body);
-        }
-
-        Ok(())
-    }
 }
 
 // Endpoint building helpers for testing
