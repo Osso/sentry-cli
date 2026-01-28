@@ -1,12 +1,69 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Serialize, Deserialize, Default)]
-pub struct Config {
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct SiteConfig {
     pub organization: Option<String>,
     pub auth_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct Config {
+    /// Default site to use when -s is not specified
+    #[serde(default)]
+    pub default_site: Option<String>,
+    /// Site-specific configurations
+    #[serde(default)]
+    pub sites: HashMap<String, SiteConfig>,
+    /// Legacy fields for backward compatibility
+    #[serde(default)]
+    pub organization: Option<String>,
+    #[serde(default)]
+    pub auth_token: Option<String>,
+}
+
+impl Config {
+    /// Get config for a specific site, or the default/legacy config
+    pub fn get_site(&self, site: Option<&str>) -> SiteConfig {
+        // If site specified, look it up
+        if let Some(s) = site {
+            if let Some(cfg) = self.sites.get(s) {
+                return cfg.clone();
+            }
+        }
+
+        // Try default site
+        if let Some(default) = &self.default_site {
+            if let Some(cfg) = self.sites.get(default) {
+                return cfg.clone();
+            }
+        }
+
+        // Fall back to legacy top-level config
+        SiteConfig {
+            organization: self.organization.clone(),
+            auth_token: self.auth_token.clone(),
+        }
+    }
+
+    /// Set config for a specific site
+    pub fn set_site(&mut self, site: &str, org: Option<String>, token: Option<String>) {
+        let entry = self.sites.entry(site.to_string()).or_default();
+        if let Some(o) = org {
+            entry.organization = Some(o);
+        }
+        if let Some(t) = token {
+            entry.auth_token = Some(t);
+        }
+    }
+
+    /// List all configured sites
+    pub fn list_sites(&self) -> Vec<&str> {
+        self.sites.keys().map(|s| s.as_str()).collect()
+    }
 }
 
 fn config_dir() -> PathBuf {

@@ -1,11 +1,22 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
+use std::time::Duration;
+
+const MAX_RETRIES: u32 = 3;
+const INITIAL_BACKOFF_SECS: u64 = 1;
 
 pub struct Client {
     http: reqwest::Client,
     base_url: String,
     auth_token: String,
     organization: String,
+}
+
+/// Check if an error is a connection timeout (os error 110)
+fn is_connection_timeout(err: &reqwest::Error) -> bool {
+    // Check the error chain for connection timeout indicators
+    let err_string = format!("{:?}", err);
+    err_string.contains("os error 110") || err_string.contains("Connection timed out")
 }
 
 impl Client {
@@ -23,14 +34,15 @@ impl Client {
     async fn get(&self, endpoint: &str) -> Result<Value> {
         let url = format!("{}{}", self.base_url, endpoint);
 
-        let resp = self
-            .http
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.auth_token))
-            .header("Content-Type", "application/json")
-            .send()
-            .await
-            .context("Failed to send request")?;
+        let resp = self.send_with_retry(|| {
+            self.http
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", self.auth_token))
+                .header("Content-Type", "application/json")
+                .send()
+        })
+        .await
+        .context("Failed to send request")?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -39,6 +51,62 @@ impl Client {
         }
 
         resp.json().await.context("Failed to parse JSON response")
+    }
+
+    async fn put(&self, endpoint: &str, body: &Value) -> Result<Value> {
+        let url = format!("{}{}", self.base_url, endpoint);
+
+        let resp = self.send_with_retry(|| {
+            self.http
+                .put(&url)
+                .header("Authorization", format!("Bearer {}", self.auth_token))
+                .header("Content-Type", "application/json")
+                .json(body)
+                .send()
+        })
+        .await
+        .context("Failed to send request")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("HTTP {} - {}", status, body);
+        }
+
+        resp.json().await.context("Failed to parse JSON response")
+    }
+
+    /// Send an HTTP request with retry logic for connection timeouts.
+    /// Retries up to MAX_RETRIES times with exponential backoff.
+    async fn send_with_retry<F, Fut>(&self, make_request: F) -> Result<reqwest::Response, reqwest::Error>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
+    {
+        let mut last_error = None;
+
+        for attempt in 0..=MAX_RETRIES {
+            match make_request().await {
+                Ok(resp) => return Ok(resp),
+                Err(err) => {
+                    if attempt < MAX_RETRIES && is_connection_timeout(&err) {
+                        let delay = INITIAL_BACKOFF_SECS * 2u64.pow(attempt);
+                        eprintln!(
+                            "Connection timeout, retrying ({}/{})...",
+                            attempt + 1,
+                            MAX_RETRIES
+                        );
+                        tokio::time::sleep(Duration::from_secs(delay)).await;
+                        last_error = Some(err);
+                    } else {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+
+        // This should only be reached if all retries failed
+        Err(last_error.expect("should have an error after retries"))
     }
 
     /// Get issue details by ID
@@ -59,6 +127,12 @@ impl Client {
     /// Get events for an issue
     pub async fn get_issue_events(&self, issue_id: &str) -> Result<Value> {
         self.get(&format!("/issues/{}/events/", issue_id)).await
+    }
+
+    /// Get a specific event by ID
+    pub async fn get_issue_event(&self, issue_id: &str, event_id: &str) -> Result<Value> {
+        self.get(&format!("/issues/{}/events/{}/", issue_id, event_id))
+            .await
     }
 
     /// Get hashes for an issue
@@ -82,5 +156,209 @@ impl Client {
             urlencoding::encode(query_param)
         ))
         .await
+    }
+
+    /// Resolve an issue (accepts short ID like "WEB-81D" or numeric ID)
+    pub async fn resolve_issue(&self, issue_id: &str) -> Result<Value> {
+        // If it's a short ID (contains non-numeric chars), fetch the numeric ID first
+        let numeric_id = if issue_id.chars().any(|c| !c.is_ascii_digit()) {
+            let issue = self.get_issue(issue_id).await?;
+            issue["id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Could not get numeric ID for issue {}", issue_id))?
+                .to_string()
+        } else {
+            issue_id.to_string()
+        };
+
+        self.put(
+            &format!("/issues/{}/", numeric_id),
+            &serde_json::json!({"status": "resolved"}),
+        )
+        .await
+    }
+
+    /// List monitors for the organization
+    pub async fn list_monitors(&self, environment: Option<&str>) -> Result<Value> {
+        let mut endpoint = format!("/organizations/{}/monitors/", self.organization);
+        if let Some(env) = environment {
+            endpoint.push_str(&format!("?environment={}", urlencoding::encode(env)));
+        }
+        self.get(&endpoint).await
+    }
+
+    /// Get monitor details by slug
+    pub async fn get_monitor(&self, monitor_slug: &str) -> Result<Value> {
+        self.get(&format!(
+            "/organizations/{}/monitors/{}/",
+            self.organization, monitor_slug
+        ))
+        .await
+    }
+
+    /// List check-ins for a monitor
+    pub async fn list_monitor_checkins(
+        &self,
+        monitor_slug: &str,
+        limit: Option<u32>,
+    ) -> Result<Value> {
+        let limit = limit.unwrap_or(20);
+        self.get(&format!(
+            "/organizations/{}/monitors/{}/checkins/?per_page={}",
+            self.organization, monitor_slug, limit
+        ))
+        .await
+    }
+
+    /// List internal integrations for the organization
+    pub async fn list_integrations(&self) -> Result<Value> {
+        self.get(&format!(
+            "/organizations/{}/sentry-apps/?status=internal",
+            self.organization
+        ))
+        .await
+    }
+
+    /// Get integration details by slug
+    pub async fn get_integration(&self, slug: &str) -> Result<Value> {
+        self.get(&format!("/sentry-apps/{}/", slug)).await
+    }
+
+    /// Get integration API tokens
+    pub async fn get_integration_tokens(&self, slug: &str) -> Result<Value> {
+        self.get(&format!(
+            "/sentry-apps/{}/api-tokens/",
+            slug
+        ))
+        .await
+    }
+
+    /// Create a new API token for an integration
+    pub async fn create_integration_token(&self, slug: &str) -> Result<Value> {
+        let url = format!("{}/sentry-apps/{}/api-tokens/", self.base_url, slug);
+
+        let resp = self
+            .send_with_retry(|| {
+                self.http
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", self.auth_token))
+                    .header("Content-Type", "application/json")
+                    .send()
+            })
+            .await
+            .context("Failed to send request")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("HTTP {} - {}", status, body);
+        }
+
+        resp.json().await.context("Failed to parse JSON response")
+    }
+
+    /// Delete an integration API token
+    pub async fn delete_integration_token(&self, slug: &str, token: &str) -> Result<()> {
+        let url = format!(
+            "{}/sentry-apps/{}/api-tokens/{}/",
+            self.base_url, slug, token
+        );
+
+        let resp = self
+            .send_with_retry(|| {
+                self.http
+                    .delete(&url)
+                    .header("Authorization", format!("Bearer {}", self.auth_token))
+                    .send()
+            })
+            .await
+            .context("Failed to send request")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("HTTP {} - {}", status, body);
+        }
+
+        Ok(())
+    }
+}
+
+// Endpoint building helpers for testing
+#[cfg(test)]
+fn monitors_endpoint(org: &str, environment: Option<&str>) -> String {
+    let mut endpoint = format!("/organizations/{}/monitors/", org);
+    if let Some(env) = environment {
+        endpoint.push_str(&format!("?environment={}", urlencoding::encode(env)));
+    }
+    endpoint
+}
+
+#[cfg(test)]
+fn monitor_endpoint(org: &str, slug: &str) -> String {
+    format!("/organizations/{}/monitors/{}/", org, slug)
+}
+
+#[cfg(test)]
+fn monitor_checkins_endpoint(org: &str, slug: &str, limit: u32) -> String {
+    format!(
+        "/organizations/{}/monitors/{}/checkins/?per_page={}",
+        org, slug, limit
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_monitors_endpoint_without_env() {
+        let endpoint = monitors_endpoint("globalcomix", None);
+        assert_eq!(endpoint, "/organizations/globalcomix/monitors/");
+    }
+
+    #[test]
+    fn test_monitors_endpoint_with_env() {
+        let endpoint = monitors_endpoint("globalcomix", Some("production"));
+        assert_eq!(
+            endpoint,
+            "/organizations/globalcomix/monitors/?environment=production"
+        );
+    }
+
+    #[test]
+    fn test_monitors_endpoint_with_special_chars() {
+        let endpoint = monitors_endpoint("globalcomix", Some("prod env"));
+        assert_eq!(
+            endpoint,
+            "/organizations/globalcomix/monitors/?environment=prod%20env"
+        );
+    }
+
+    #[test]
+    fn test_monitor_endpoint() {
+        let endpoint = monitor_endpoint("globalcomix", "daily-backup");
+        assert_eq!(
+            endpoint,
+            "/organizations/globalcomix/monitors/daily-backup/"
+        );
+    }
+
+    #[test]
+    fn test_monitor_checkins_endpoint() {
+        let endpoint = monitor_checkins_endpoint("globalcomix", "daily-backup", 10);
+        assert_eq!(
+            endpoint,
+            "/organizations/globalcomix/monitors/daily-backup/checkins/?per_page=10"
+        );
+    }
+
+    #[test]
+    fn test_monitor_checkins_endpoint_default_limit() {
+        let endpoint = monitor_checkins_endpoint("globalcomix", "my-cron", 20);
+        assert_eq!(
+            endpoint,
+            "/organizations/globalcomix/monitors/my-cron/checkins/?per_page=20"
+        );
     }
 }
