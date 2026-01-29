@@ -165,6 +165,17 @@ impl Client {
 
     /// Resolve an issue (accepts short ID like "WEB-81D" or numeric ID)
     pub async fn resolve_issue(&self, issue_id: &str) -> Result<Value> {
+        self.update_issue_status(issue_id, "resolved").await
+    }
+
+    /// Ignore an issue (accepts short ID like "WEB-81D" or numeric ID)
+    /// Ignored issues won't reopen when new events arrive
+    pub async fn ignore_issue(&self, issue_id: &str) -> Result<Value> {
+        self.update_issue_status(issue_id, "ignored").await
+    }
+
+    /// Update issue status (helper for resolve/ignore)
+    async fn update_issue_status(&self, issue_id: &str, status: &str) -> Result<Value> {
         // If it's a short ID (contains non-numeric chars), fetch the numeric ID first
         let numeric_id = if issue_id.chars().any(|c| !c.is_ascii_digit()) {
             let issue = self.get_issue(issue_id).await?;
@@ -178,7 +189,7 @@ impl Client {
 
         self.put(
             &format!("/issues/{}/", numeric_id),
-            &serde_json::json!({"status": "resolved"}),
+            &serde_json::json!({"status": status}),
         )
         .await
     }

@@ -93,6 +93,8 @@ enum IssueCommands {
     Hashes,
     /// Mark issue as resolved
     Resolve,
+    /// Ignore issue (archive - won't reopen on new events)
+    Ignore,
 }
 
 #[derive(Subcommand)]
@@ -237,6 +239,11 @@ async fn main() -> Result<()> {
                     let result = client.resolve_issue(&id).await?;
                     let short_id = result["shortId"].as_str().unwrap_or(&id);
                     println!("Resolved {}", short_id);
+                }
+                Some(IssueCommands::Ignore) => {
+                    let result = client.ignore_issue(&id).await?;
+                    let short_id = result["shortId"].as_str().unwrap_or(&id);
+                    println!("Ignored {}", short_id);
                 }
             }
         }
