@@ -34,15 +34,16 @@ impl Client {
     async fn get(&self, endpoint: &str) -> Result<Value> {
         let url = format!("{}{}", self.base_url, endpoint);
 
-        let resp = self.send_with_retry(|| {
-            self.http
-                .get(&url)
-                .header("Authorization", format!("Bearer {}", self.auth_token))
-                .header("Content-Type", "application/json")
-                .send()
-        })
-        .await
-        .context("Failed to send request")?;
+        let resp = self
+            .send_with_retry(|| {
+                self.http
+                    .get(&url)
+                    .header("Authorization", format!("Bearer {}", self.auth_token))
+                    .header("Content-Type", "application/json")
+                    .send()
+            })
+            .await
+            .context("Failed to send request")?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -56,16 +57,17 @@ impl Client {
     async fn put(&self, endpoint: &str, body: &Value) -> Result<Value> {
         let url = format!("{}{}", self.base_url, endpoint);
 
-        let resp = self.send_with_retry(|| {
-            self.http
-                .put(&url)
-                .header("Authorization", format!("Bearer {}", self.auth_token))
-                .header("Content-Type", "application/json")
-                .json(body)
-                .send()
-        })
-        .await
-        .context("Failed to send request")?;
+        let resp = self
+            .send_with_retry(|| {
+                self.http
+                    .put(&url)
+                    .header("Authorization", format!("Bearer {}", self.auth_token))
+                    .header("Content-Type", "application/json")
+                    .json(body)
+                    .send()
+            })
+            .await
+            .context("Failed to send request")?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -78,7 +80,10 @@ impl Client {
 
     /// Send an HTTP request with retry logic for connection timeouts.
     /// Retries up to MAX_RETRIES times with exponential backoff.
-    async fn send_with_retry<F, Fut>(&self, make_request: F) -> Result<reqwest::Response, reqwest::Error>
+    async fn send_with_retry<F, Fut>(
+        &self,
+        make_request: F,
+    ) -> Result<reqwest::Response, reqwest::Error>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
@@ -223,7 +228,6 @@ impl Client {
     pub async fn get_integration(&self, slug: &str) -> Result<Value> {
         self.get(&format!("/sentry-apps/{}/", slug)).await
     }
-
 }
 
 // Endpoint building helpers for testing

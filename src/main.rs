@@ -105,7 +105,6 @@ enum MonitorCommands {
     },
 }
 
-
 fn get_client(site: Option<&str>) -> Result<api::Client> {
     let cfg = config::load_config()?;
     let site_cfg = cfg.get_site(site);
@@ -154,7 +153,10 @@ async fn main() -> Result<()> {
                 if sites.is_empty() {
                     println!("No sites configured.");
                     if cfg.organization.is_some() {
-                        println!("Legacy config found (org: {})", cfg.organization.as_deref().unwrap_or("?"));
+                        println!(
+                            "Legacy config found (org: {})",
+                            cfg.organization.as_deref().unwrap_or("?")
+                        );
                     }
                 } else {
                     println!("Configured sites:");
