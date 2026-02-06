@@ -174,18 +174,42 @@ impl Client {
         self.update_issue_status(issue_id, "ignored").await
     }
 
-    /// Update issue status (helper for resolve/ignore)
-    async fn update_issue_status(&self, issue_id: &str, status: &str) -> Result<Value> {
-        // If it's a short ID (contains non-numeric chars), fetch the numeric ID first
-        let numeric_id = if issue_id.chars().any(|c| !c.is_ascii_digit()) {
+    /// Unresolve an issue (set back to unresolved)
+    pub async fn unresolve_issue(&self, issue_id: &str) -> Result<Value> {
+        self.update_issue_status(issue_id, "unresolved").await
+    }
+
+    /// Snooze an issue for a given duration in minutes
+    /// Sets the issue to ignored with an ignoreDuration, so it reopens after the period
+    pub async fn snooze_issue(&self, issue_id: &str, duration_minutes: u64) -> Result<Value> {
+        let numeric_id = self.resolve_numeric_id(issue_id).await?;
+
+        self.put(
+            &format!("/issues/{}/", numeric_id),
+            &serde_json::json!({
+                "status": "ignored",
+                "statusDetails": {"ignoreDuration": duration_minutes}
+            }),
+        )
+        .await
+    }
+
+    /// Resolve a short ID (e.g. "WEB-81D") to a numeric ID, or pass through numeric IDs
+    async fn resolve_numeric_id(&self, issue_id: &str) -> Result<String> {
+        if issue_id.chars().any(|c| !c.is_ascii_digit()) {
             let issue = self.get_issue(issue_id).await?;
             issue["id"]
                 .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Could not get numeric ID for issue {}", issue_id))?
-                .to_string()
+                .ok_or_else(|| anyhow::anyhow!("Could not get numeric ID for issue {}", issue_id))
+                .map(|s| s.to_string())
         } else {
-            issue_id.to_string()
-        };
+            Ok(issue_id.to_string())
+        }
+    }
+
+    /// Update issue status (helper for resolve/ignore)
+    async fn update_issue_status(&self, issue_id: &str, status: &str) -> Result<Value> {
+        let numeric_id = self.resolve_numeric_id(issue_id).await?;
 
         self.put(
             &format!("/issues/{}/", numeric_id),

@@ -1,7 +1,7 @@
 mod api;
 mod config;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -81,6 +81,14 @@ enum Commands {
         /// Issue ID
         id: String,
     },
+    /// Snooze an issue for a duration (shortcut for `issue <id> snooze`)
+    Snooze {
+        /// Issue ID
+        id: String,
+        /// Duration to snooze (e.g., 30d, 7d, 24h, 60m). Default: 30d
+        #[arg(short, long, default_value = "30d")]
+        duration: String,
+    },
     /// List releases
     Releases {
         /// Filter by project slug
@@ -112,8 +120,18 @@ enum IssueCommands {
     Hashes,
     /// Mark issue as resolved
     Resolve,
+    /// Unresolve issue (set back to unresolved from resolved or ignored)
+    Unresolve,
     /// Ignore issue (archive - won't reopen on new events)
     Ignore,
+    /// Unignore issue (set back to unresolved from ignored)
+    Unignore,
+    /// Snooze issue for a duration (ignored temporarily, reopens after)
+    Snooze {
+        /// Duration to snooze (e.g., 30d, 7d, 24h, 60m). Default: 30d
+        #[arg(short, long, default_value = "30d")]
+        duration: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -124,6 +142,26 @@ enum MonitorCommands {
         #[arg(short, long)]
         limit: Option<u32>,
     },
+}
+
+/// Parse a duration string like "30d", "7d", "24h", "60m" into minutes
+fn parse_duration_to_minutes(s: &str) -> Result<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        bail!("Duration cannot be empty");
+    }
+
+    let (num_str, suffix) = s.split_at(s.len() - 1);
+    let value: u64 = num_str
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid duration '{}'. Expected format: 30d, 24h, or 60m", s))?;
+
+    match suffix {
+        "d" => Ok(value * 24 * 60),
+        "h" => Ok(value * 60),
+        "m" => Ok(value),
+        _ => bail!("Unknown duration suffix '{}'. Use d (days), h (hours), or m (minutes)", suffix),
+    }
 }
 
 fn get_client(site: Option<&str>) -> Result<api::Client> {
@@ -259,10 +297,26 @@ async fn main() -> Result<()> {
                     let short_id = result["shortId"].as_str().unwrap_or(&id);
                     println!("Resolved {}", short_id);
                 }
+                Some(IssueCommands::Unresolve) => {
+                    let result = client.unresolve_issue(&id).await?;
+                    let short_id = result["shortId"].as_str().unwrap_or(&id);
+                    println!("Unresolved {}", short_id);
+                }
                 Some(IssueCommands::Ignore) => {
                     let result = client.ignore_issue(&id).await?;
                     let short_id = result["shortId"].as_str().unwrap_or(&id);
                     println!("Ignored {}", short_id);
+                }
+                Some(IssueCommands::Unignore) => {
+                    let result = client.unresolve_issue(&id).await?;
+                    let short_id = result["shortId"].as_str().unwrap_or(&id);
+                    println!("Unignored {}", short_id);
+                }
+                Some(IssueCommands::Snooze { duration }) => {
+                    let minutes = parse_duration_to_minutes(&duration)?;
+                    let result = client.snooze_issue(&id, minutes).await?;
+                    let short_id = result["shortId"].as_str().unwrap_or(&id);
+                    println!("Snoozed {} for {}", short_id, duration);
                 }
             }
         }
@@ -336,6 +390,13 @@ async fn main() -> Result<()> {
             let short_id = result["shortId"].as_str().unwrap_or(&id);
             println!("Resolved {}", short_id);
         }
+        Commands::Snooze { id, duration } => {
+            let client = get_client(site)?;
+            let minutes = parse_duration_to_minutes(&duration)?;
+            let result = client.snooze_issue(&id, minutes).await?;
+            let short_id = result["shortId"].as_str().unwrap_or(&id);
+            println!("Snoozed {} for {}", short_id, duration);
+        }
         Commands::Releases { project, limit } => {
             let client = get_client(site)?;
             let releases = client.list_releases(project.as_deref(), limit).await?;
@@ -349,4 +410,36 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_days() {
+        assert_eq!(parse_duration_to_minutes("30d").unwrap(), 30 * 24 * 60);
+        assert_eq!(parse_duration_to_minutes("7d").unwrap(), 7 * 24 * 60);
+        assert_eq!(parse_duration_to_minutes("1d").unwrap(), 24 * 60);
+    }
+
+    #[test]
+    fn test_parse_hours() {
+        assert_eq!(parse_duration_to_minutes("24h").unwrap(), 24 * 60);
+        assert_eq!(parse_duration_to_minutes("1h").unwrap(), 60);
+    }
+
+    #[test]
+    fn test_parse_minutes() {
+        assert_eq!(parse_duration_to_minutes("60m").unwrap(), 60);
+        assert_eq!(parse_duration_to_minutes("30m").unwrap(), 30);
+    }
+
+    #[test]
+    fn test_parse_invalid() {
+        assert!(parse_duration_to_minutes("").is_err());
+        assert!(parse_duration_to_minutes("abc").is_err());
+        assert!(parse_duration_to_minutes("30x").is_err());
+        assert!(parse_duration_to_minutes("d").is_err());
+    }
 }
