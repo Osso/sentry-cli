@@ -1,7 +1,7 @@
 mod api;
 mod config;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -152,15 +152,21 @@ fn parse_duration_to_minutes(s: &str) -> Result<u64> {
     }
 
     let (num_str, suffix) = s.split_at(s.len() - 1);
-    let value: u64 = num_str
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid duration '{}'. Expected format: 30d, 24h, or 60m", s))?;
+    let value: u64 = num_str.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid duration '{}'. Expected format: 30d, 24h, or 60m",
+            s
+        )
+    })?;
 
     match suffix {
         "d" => Ok(value * 24 * 60),
         "h" => Ok(value * 60),
         "m" => Ok(value),
-        _ => bail!("Unknown duration suffix '{}'. Use d (days), h (hours), or m (minutes)", suffix),
+        _ => bail!(
+            "Unknown duration suffix '{}'. Use d (days), h (hours), or m (minutes)",
+            suffix
+        ),
     }
 }
 
