@@ -76,6 +76,20 @@ enum Commands {
         /// Integration slug (e.g., claude-agent-4744fc)
         slug: String,
     },
+    /// List releases
+    Releases {
+        /// Filter by project slug
+        #[arg(short, long)]
+        project: Option<String>,
+        /// Number of releases to fetch (default: 25)
+        #[arg(short, long)]
+        limit: Option<u32>,
+    },
+    /// Get release details
+    Release {
+        /// Release version (e.g., web36aa0c07)
+        version: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -310,6 +324,16 @@ async fn main() -> Result<()> {
             let client = get_client(site)?;
             let integration = client.get_integration(&slug).await?;
             println!("{}", serde_json::to_string_pretty(&integration)?);
+        }
+        Commands::Releases { project, limit } => {
+            let client = get_client(site)?;
+            let releases = client.list_releases(project.as_deref(), limit).await?;
+            println!("{}", serde_json::to_string_pretty(&releases)?);
+        }
+        Commands::Release { version } => {
+            let client = get_client(site)?;
+            let release = client.get_release(&version).await?;
+            println!("{}", serde_json::to_string_pretty(&release)?);
         }
     }
 

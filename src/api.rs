@@ -239,6 +239,29 @@ impl Client {
     pub async fn get_integration(&self, slug: &str) -> Result<Value> {
         self.get(&format!("/sentry-apps/{}/", slug)).await
     }
+
+    /// List releases for the organization
+    pub async fn list_releases(&self, project: Option<&str>, limit: Option<u32>) -> Result<Value> {
+        let limit = limit.unwrap_or(25);
+        let mut endpoint = format!(
+            "/organizations/{}/releases/?per_page={}",
+            self.organization, limit
+        );
+        if let Some(proj) = project {
+            endpoint.push_str(&format!("&project={}", urlencoding::encode(proj)));
+        }
+        self.get(&endpoint).await
+    }
+
+    /// Get release details by version
+    pub async fn get_release(&self, version: &str) -> Result<Value> {
+        self.get(&format!(
+            "/organizations/{}/releases/{}/",
+            self.organization,
+            urlencoding::encode(version)
+        ))
+        .await
+    }
 }
 
 // Endpoint building helpers for testing
