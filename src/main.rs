@@ -76,6 +76,11 @@ enum Commands {
         /// Integration slug (e.g., claude-agent-4744fc)
         slug: String,
     },
+    /// Resolve an issue by ID (shortcut for `issue <id> resolve`)
+    Resolve {
+        /// Issue ID
+        id: String,
+    },
     /// List releases
     Releases {
         /// Filter by project slug
@@ -324,6 +329,12 @@ async fn main() -> Result<()> {
             let client = get_client(site)?;
             let integration = client.get_integration(&slug).await?;
             println!("{}", serde_json::to_string_pretty(&integration)?);
+        }
+        Commands::Resolve { id } => {
+            let client = get_client(site)?;
+            let result = client.resolve_issue(&id).await?;
+            let short_id = result["shortId"].as_str().unwrap_or(&id);
+            println!("Resolved {}", short_id);
         }
         Commands::Releases { project, limit } => {
             let client = get_client(site)?;
