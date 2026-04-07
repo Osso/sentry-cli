@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 
 pub const SLOW_SPAN_MS: f64 = 100.0;
 
@@ -92,7 +92,11 @@ fn print_span_tree(spans: &[Span], parent_id: Option<&str>, prefix: &str, is_las
             format!("{}│   ", prefix)
         };
 
-        let slow_marker = if span.duration_ms > SLOW_SPAN_MS { " ⚠ SLOW" } else { "" };
+        let slow_marker = if span.duration_ms > SLOW_SPAN_MS {
+            " ⚠ SLOW"
+        } else {
+            ""
+        };
         let status_str = if !span.status.is_empty() && span.status != "ok" {
             format!(" [{}]", span.status)
         } else {
@@ -129,12 +133,18 @@ fn extract_event_spans(event: &Value) -> Vec<Span> {
 
 pub fn print_event_spans(event: &Value) {
     // Print transaction root span from the event itself
-    let root_op = event["contexts"]["trace"]["op"].as_str().unwrap_or("transaction");
-    let root_desc = event["transaction"].as_str().unwrap_or(
-        event["message"].as_str().unwrap_or(""),
-    );
+    let root_op = event["contexts"]["trace"]["op"]
+        .as_str()
+        .unwrap_or("transaction");
+    let root_desc = event["transaction"]
+        .as_str()
+        .unwrap_or(event["message"].as_str().unwrap_or(""));
     let root_duration = compute_duration_ms(&event["startTimestamp"], &event["timestamp"]);
-    let slow_marker = if root_duration > SLOW_SPAN_MS { " ⚠ SLOW" } else { "" };
+    let slow_marker = if root_duration > SLOW_SPAN_MS {
+        " ⚠ SLOW"
+    } else {
+        ""
+    };
 
     println!(
         "{} — {} ({:.1}ms){}",
@@ -167,7 +177,11 @@ pub fn extract_transaction_event_refs(data: &Value) -> Vec<(String, String, Stri
         let project_slug = txn["projectSlug"].as_str().unwrap_or("");
         let event_id = txn["eventID"].as_str().unwrap_or("");
         if !span_id.is_empty() && !project_slug.is_empty() && !event_id.is_empty() {
-            refs.push((span_id.to_string(), project_slug.to_string(), event_id.to_string()));
+            refs.push((
+                span_id.to_string(),
+                project_slug.to_string(),
+                event_id.to_string(),
+            ));
         }
     }
 
@@ -187,7 +201,9 @@ pub fn print_trace(data: &Value, events: &HashMap<String, Value>) {
         .iter()
         .filter(|s| {
             s.parent_span_id.is_none()
-                || !spans.iter().any(|p| Some(&p.span_id) == s.parent_span_id.as_ref())
+                || !spans
+                    .iter()
+                    .any(|p| Some(&p.span_id) == s.parent_span_id.as_ref())
         })
         .map(|s| s.span_id.as_str())
         .collect();
@@ -196,7 +212,11 @@ pub fn print_trace(data: &Value, events: &HashMap<String, Value>) {
     for (i, root_id) in root_ids.iter().enumerate() {
         let root = spans.iter().find(|s| s.span_id == *root_id).unwrap();
         let last = i == root_ids.len() - 1;
-        let slow_marker = if root.duration_ms > SLOW_SPAN_MS { " ⚠ SLOW" } else { "" };
+        let slow_marker = if root.duration_ms > SLOW_SPAN_MS {
+            " ⚠ SLOW"
+        } else {
+            ""
+        };
         let status_str = if !root.status.is_empty() && root.status != "ok" {
             format!(" [{}]", root.status)
         } else {

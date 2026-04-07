@@ -221,15 +221,27 @@ fn print_config_sites(cfg: &config::Config) {
     if sites.is_empty() {
         println!("No sites configured.");
         if cfg.organization.is_some() {
-            println!("Legacy config found (org: {})", cfg.organization.as_deref().unwrap_or("?"));
+            println!(
+                "Legacy config found (org: {})",
+                cfg.organization.as_deref().unwrap_or("?")
+            );
         }
         return;
     }
     println!("Configured sites:");
     for s in sites {
-        let marker = if cfg.default_site.as_deref() == Some(s) { " (default)" } else { "" };
+        let marker = if cfg.default_site.as_deref() == Some(s) {
+            " (default)"
+        } else {
+            ""
+        };
         let site_cfg = cfg.sites.get(s).unwrap();
-        println!("  {}{}: org={}", s, marker, site_cfg.organization.as_deref().unwrap_or("?"));
+        println!(
+            "  {}{}: org={}",
+            s,
+            marker,
+            site_cfg.organization.as_deref().unwrap_or("?")
+        );
     }
 }
 
@@ -242,18 +254,28 @@ fn handle_config_save(
 ) -> Result<()> {
     if let Some(s) = site {
         cfg.set_site(s, org, token);
-        if default { cfg.default_site = Some(s.to_string()); }
+        if default {
+            cfg.default_site = Some(s.to_string());
+        }
         config::save_config(cfg)?;
         println!("Config saved for site '{}'", s);
     } else if org.is_some() || token.is_some() {
-        if let Some(o) = org { cfg.organization = Some(o); }
-        if let Some(t) = token { cfg.auth_token = Some(t); }
+        if let Some(o) = org {
+            cfg.organization = Some(o);
+        }
+        if let Some(t) = token {
+            cfg.auth_token = Some(t);
+        }
         config::save_config(cfg)?;
         println!("Config saved to ~/.config/sentry-cli-rs/config.json");
     } else {
-        if let Some(s) = &cfg.default_site { println!("Default site: {}", s); }
+        if let Some(s) = &cfg.default_site {
+            println!("Default site: {}", s);
+        }
         let sites = cfg.list_sites();
-        if !sites.is_empty() { println!("Sites: {}", sites.join(", ")); }
+        if !sites.is_empty() {
+            println!("Sites: {}", sites.join(", "));
+        }
         if cfg.organization.is_some() {
             println!("Legacy org: {}", cfg.organization.as_deref().unwrap_or("?"));
         }
@@ -261,29 +283,72 @@ fn handle_config_save(
     Ok(())
 }
 
-async fn handle_issue_command(client: &api::Client, id: &str, command: Option<IssueCommands>) -> Result<()> {
+async fn handle_issue_command(
+    client: &api::Client,
+    id: &str,
+    command: Option<IssueCommands>,
+) -> Result<()> {
     match command {
-        None => println!("{}", serde_json::to_string_pretty(&client.get_issue(id).await?)?),
-        Some(IssueCommands::Latest) => println!("{}", serde_json::to_string_pretty(&client.get_issue_latest_event(id).await?)?),
-        Some(IssueCommands::Events) => println!("{}", serde_json::to_string_pretty(&client.get_issue_events(id).await?)?),
-        Some(IssueCommands::Event { event_id }) => println!("{}", serde_json::to_string_pretty(&client.get_issue_event(id, &event_id).await?)?),
-        Some(IssueCommands::Hashes) => println!("{}", serde_json::to_string_pretty(&client.get_issue_hashes(id).await?)?),
+        None => println!(
+            "{}",
+            serde_json::to_string_pretty(&client.get_issue(id).await?)?
+        ),
+        Some(IssueCommands::Latest) => println!(
+            "{}",
+            serde_json::to_string_pretty(&client.get_issue_latest_event(id).await?)?
+        ),
+        Some(IssueCommands::Events) => println!(
+            "{}",
+            serde_json::to_string_pretty(&client.get_issue_events(id).await?)?
+        ),
+        Some(IssueCommands::Event { event_id }) => println!(
+            "{}",
+            serde_json::to_string_pretty(&client.get_issue_event(id, &event_id).await?)?
+        ),
+        Some(IssueCommands::Hashes) => println!(
+            "{}",
+            serde_json::to_string_pretty(&client.get_issue_hashes(id).await?)?
+        ),
         Some(IssueCommands::Resolve) => {
-            println!("Resolved {}", client.resolve_issue(id).await?["shortId"].as_str().unwrap_or(id));
+            println!(
+                "Resolved {}",
+                client.resolve_issue(id).await?["shortId"]
+                    .as_str()
+                    .unwrap_or(id)
+            );
         }
         Some(IssueCommands::Unresolve) => {
-            println!("Unresolved {}", client.unresolve_issue(id).await?["shortId"].as_str().unwrap_or(id));
+            println!(
+                "Unresolved {}",
+                client.unresolve_issue(id).await?["shortId"]
+                    .as_str()
+                    .unwrap_or(id)
+            );
         }
         Some(IssueCommands::Ignore) => {
-            println!("Ignored {}", client.ignore_issue(id).await?["shortId"].as_str().unwrap_or(id));
+            println!(
+                "Ignored {}",
+                client.ignore_issue(id).await?["shortId"]
+                    .as_str()
+                    .unwrap_or(id)
+            );
         }
         Some(IssueCommands::Unignore) => {
-            println!("Unignored {}", client.unresolve_issue(id).await?["shortId"].as_str().unwrap_or(id));
+            println!(
+                "Unignored {}",
+                client.unresolve_issue(id).await?["shortId"]
+                    .as_str()
+                    .unwrap_or(id)
+            );
         }
         Some(IssueCommands::Snooze { duration }) => {
             let minutes = parse_duration_to_minutes(&duration)?;
             let result = client.snooze_issue(id, minutes).await?;
-            println!("Snoozed {} for {}", result["shortId"].as_str().unwrap_or(id), duration);
+            println!(
+                "Snoozed {} for {}",
+                result["shortId"].as_str().unwrap_or(id),
+                duration
+            );
         }
     }
     Ok(())
@@ -299,7 +364,9 @@ fn print_integrations(integrations: &serde_json::Value) -> Result<()> {
                 let slug = int["slug"].as_str().unwrap_or("?");
                 let webhook = int["webhookUrl"].as_str().unwrap_or("-");
                 println!("{} ({})", name, slug);
-                if webhook != "-" { println!("  webhook: {}", webhook); }
+                if webhook != "-" {
+                    println!("  webhook: {}", webhook);
+                }
             }
         }
     } else {
@@ -308,11 +375,16 @@ fn print_integrations(integrations: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-async fn fetch_trace_events(client: &api::Client, data: &serde_json::Value) -> HashMap<String, serde_json::Value> {
+async fn fetch_trace_events(
+    client: &api::Client,
+    data: &serde_json::Value,
+) -> HashMap<String, serde_json::Value> {
     let mut events = HashMap::new();
     for (span_id, project_slug, event_id) in trace::extract_transaction_event_refs(data) {
         match client.get_event(&project_slug, &event_id).await {
-            Ok(event) => { events.insert(span_id, event); }
+            Ok(event) => {
+                events.insert(span_id, event);
+            }
             Err(e) => eprintln!("Warning: failed to fetch event {}: {}", event_id, e),
         }
     }
@@ -329,28 +401,82 @@ async fn handle_trace_command(client: &api::Client, trace_id: &str) -> Result<()
 async fn dispatch(cli: Cli) -> Result<()> {
     let site = cli.site.as_deref();
     match cli.command {
-        Commands::Config { org, token, default, list } => {
+        Commands::Config {
+            org,
+            token,
+            default,
+            list,
+        } => {
             let mut cfg = config::load_config().unwrap_or_default();
-            if list { print_config_sites(&cfg); } else { handle_config_save(&mut cfg, site, org, token, default)?; }
+            if list {
+                print_config_sites(&cfg);
+            } else {
+                handle_config_save(&mut cfg, site, org, token, default)?;
+            }
         }
-        Commands::Issue { id, command } => handle_issue_command(&get_client(site)?, &id, command).await?,
-        Commands::Projects => println!("{}", serde_json::to_string_pretty(&get_client(site)?.list_projects().await?)?),
-        Commands::Issues { project, query } => println!("{}", serde_json::to_string_pretty(&get_client(site)?.list_issues(&project, query.as_deref()).await?)?),
-        Commands::Monitors { environment } => println!("{}", serde_json::to_string_pretty(&get_client(site)?.list_monitors(environment.as_deref()).await?)?),
-        Commands::Monitor { slug, command } => handle_monitor_command(&get_client(site)?, &slug, command).await?,
+        Commands::Issue { id, command } => {
+            handle_issue_command(&get_client(site)?, &id, command).await?
+        }
+        Commands::Projects => println!(
+            "{}",
+            serde_json::to_string_pretty(&get_client(site)?.list_projects().await?)?
+        ),
+        Commands::Issues { project, query } => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &get_client(site)?
+                    .list_issues(&project, query.as_deref())
+                    .await?
+            )?
+        ),
+        Commands::Monitors { environment } => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &get_client(site)?
+                    .list_monitors(environment.as_deref())
+                    .await?
+            )?
+        ),
+        Commands::Monitor { slug, command } => {
+            handle_monitor_command(&get_client(site)?, &slug, command).await?
+        }
         Commands::Events { id } => print_events_redirect(id),
-        Commands::Integrations => print_integrations(&get_client(site)?.list_integrations().await?)?,
-        Commands::Integration { slug } => println!("{}", serde_json::to_string_pretty(&get_client(site)?.get_integration(&slug).await?)?),
+        Commands::Integrations => {
+            print_integrations(&get_client(site)?.list_integrations().await?)?
+        }
+        Commands::Integration { slug } => println!(
+            "{}",
+            serde_json::to_string_pretty(&get_client(site)?.get_integration(&slug).await?)?
+        ),
         Commands::Resolve { id } => {
-            println!("Resolved {}", get_client(site)?.resolve_issue(&id).await?["shortId"].as_str().unwrap_or(&id));
+            println!(
+                "Resolved {}",
+                get_client(site)?.resolve_issue(&id).await?["shortId"]
+                    .as_str()
+                    .unwrap_or(&id)
+            );
         }
         Commands::Snooze { id, duration } => {
             let minutes = parse_duration_to_minutes(&duration)?;
             let result = get_client(site)?.snooze_issue(&id, minutes).await?;
-            println!("Snoozed {} for {}", result["shortId"].as_str().unwrap_or(&id), duration);
+            println!(
+                "Snoozed {} for {}",
+                result["shortId"].as_str().unwrap_or(&id),
+                duration
+            );
         }
-        Commands::Releases { project, limit } => println!("{}", serde_json::to_string_pretty(&get_client(site)?.list_releases(project.as_deref(), limit).await?)?),
-        Commands::Release { version } => println!("{}", serde_json::to_string_pretty(&get_client(site)?.get_release(&version).await?)?),
+        Commands::Releases { project, limit } => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &get_client(site)?
+                    .list_releases(project.as_deref(), limit)
+                    .await?
+            )?
+        ),
+        Commands::Release { version } => println!(
+            "{}",
+            serde_json::to_string_pretty(&get_client(site)?.get_release(&version).await?)?
+        ),
         Commands::Trace { trace_id } => handle_trace_command(&get_client(site)?, &trace_id).await?,
         Commands::Event { project, event_id } => {
             let event = get_client(site)?.get_event(&project, &event_id).await?;
@@ -360,10 +486,20 @@ async fn dispatch(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-async fn handle_monitor_command(client: &api::Client, slug: &str, command: Option<MonitorCommands>) -> Result<()> {
+async fn handle_monitor_command(
+    client: &api::Client,
+    slug: &str,
+    command: Option<MonitorCommands>,
+) -> Result<()> {
     match command {
-        None => println!("{}", serde_json::to_string_pretty(&client.get_monitor(slug).await?)?),
-        Some(MonitorCommands::Checkins { limit }) => println!("{}", serde_json::to_string_pretty(&client.list_monitor_checkins(slug, limit).await?)?),
+        None => println!(
+            "{}",
+            serde_json::to_string_pretty(&client.get_monitor(slug).await?)?
+        ),
+        Some(MonitorCommands::Checkins { limit }) => println!(
+            "{}",
+            serde_json::to_string_pretty(&client.list_monitor_checkins(slug, limit).await?)?
+        ),
         Some(MonitorCommands::Delete) => {
             client.delete_monitor(slug).await?;
             println!("Monitor '{}' deleted successfully.", slug);
@@ -375,8 +511,11 @@ async fn handle_monitor_command(client: &api::Client, slug: &str, command: Optio
 fn print_events_redirect(id: Option<String>) {
     eprintln!("Error: 'events' is a subcommand of 'issue', not a top-level command.");
     eprintln!();
-    if let Some(issue_id) = id { eprintln!("Usage: sentry issue {} events", issue_id); }
-    else { eprintln!("Usage: sentry issue <ISSUE_ID> events"); }
+    if let Some(issue_id) = id {
+        eprintln!("Usage: sentry issue {} events", issue_id);
+    } else {
+        eprintln!("Usage: sentry issue <ISSUE_ID> events");
+    }
     std::process::exit(1);
 }
 
