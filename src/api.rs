@@ -54,6 +54,29 @@ impl Client {
         resp.json().await.context("Failed to parse JSON response")
     }
 
+    async fn delete(&self, endpoint: &str) -> Result<reqwest::StatusCode> {
+        let url = format!("{}{}", self.base_url, endpoint);
+
+        let resp = self
+            .send_with_retry(|| {
+                self.http
+                    .delete(&url)
+                    .header("Authorization", format!("Bearer {}", self.auth_token))
+                    .header("Content-Type", "application/json")
+                    .send()
+            })
+            .await
+            .context("Failed to send request")?;
+
+        let status = resp.status();
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("HTTP {} - {}", status, body);
+        }
+
+        Ok(status)
+    }
+
     async fn put(&self, endpoint: &str, body: &Value) -> Result<Value> {
         let url = format!("{}{}", self.base_url, endpoint);
 
@@ -250,6 +273,15 @@ impl Client {
         .await
     }
 
+    /// Delete a monitor by slug
+    pub async fn delete_monitor(&self, monitor_slug: &str) -> Result<reqwest::StatusCode> {
+        self.delete(&format!(
+            "/organizations/{}/monitors/{}/",
+            self.organization, monitor_slug
+        ))
+        .await
+    }
+
     /// List internal integrations for the organization
     pub async fn list_integrations(&self) -> Result<Value> {
         self.get(&format!(
@@ -283,6 +315,24 @@ impl Client {
             "/organizations/{}/releases/{}/",
             self.organization,
             urlencoding::encode(version)
+        ))
+        .await
+    }
+
+    /// Get trace details by trace ID
+    pub async fn get_trace(&self, trace_id: &str) -> Result<Value> {
+        self.get(&format!(
+            "/organizations/{}/events-trace/{}/",
+            self.organization, trace_id
+        ))
+        .await
+    }
+
+    /// Get a specific event by project slug and event ID
+    pub async fn get_event(&self, project_slug: &str, event_id: &str) -> Result<Value> {
+        self.get(&format!(
+            "/organizations/{}/events/{}:{}/",
+            self.organization, project_slug, event_id
         ))
         .await
     }
