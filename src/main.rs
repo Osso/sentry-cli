@@ -291,19 +291,27 @@ async fn handle_issue_status_change(
     match command {
         IssueCommands::Resolve => println!(
             "Resolved {}",
-            client.resolve_issue(id).await?["shortId"].as_str().unwrap_or(id)
+            client.resolve_issue(id).await?["shortId"]
+                .as_str()
+                .unwrap_or(id)
         ),
         IssueCommands::Unresolve => println!(
             "Unresolved {}",
-            client.unresolve_issue(id).await?["shortId"].as_str().unwrap_or(id)
+            client.unresolve_issue(id).await?["shortId"]
+                .as_str()
+                .unwrap_or(id)
         ),
         IssueCommands::Ignore => println!(
             "Ignored {}",
-            client.ignore_issue(id).await?["shortId"].as_str().unwrap_or(id)
+            client.ignore_issue(id).await?["shortId"]
+                .as_str()
+                .unwrap_or(id)
         ),
         IssueCommands::Unignore => println!(
             "Unignored {}",
-            client.unresolve_issue(id).await?["shortId"].as_str().unwrap_or(id)
+            client.unresolve_issue(id).await?["shortId"]
+                .as_str()
+                .unwrap_or(id)
         ),
         IssueCommands::Snooze { duration } => {
             let minutes = parse_duration_to_minutes(&duration)?;
@@ -433,12 +441,16 @@ async fn dispatch(cli: Cli) -> Result<()> {
             handle_issue_command(&get_client(site)?, &id, command).await?
         }
         Commands::Projects => print_json(&get_client(site)?.list_projects().await?)?,
-        Commands::Issues { project, query } => {
-            print_json(&get_client(site)?.list_issues(&project, query.as_deref()).await?)?
-        }
-        Commands::Monitors { environment } => {
-            print_json(&get_client(site)?.list_monitors(environment.as_deref()).await?)?
-        }
+        Commands::Issues { project, query } => print_json(
+            &get_client(site)?
+                .list_issues(&project, query.as_deref())
+                .await?,
+        )?,
+        Commands::Monitors { environment } => print_json(
+            &get_client(site)?
+                .list_monitors(environment.as_deref())
+                .await?,
+        )?,
         Commands::Monitor { slug, command } => {
             handle_monitor_command(&get_client(site)?, &slug, command).await?
         }
@@ -453,9 +465,11 @@ async fn dispatch(cli: Cli) -> Result<()> {
         Commands::Snooze { id, duration } => {
             handle_snooze_shortcut(&get_client(site)?, &id, &duration).await?
         }
-        Commands::Releases { project, limit } => {
-            print_json(&get_client(site)?.list_releases(project.as_deref(), limit).await?)?
-        }
+        Commands::Releases { project, limit } => print_json(
+            &get_client(site)?
+                .list_releases(project.as_deref(), limit)
+                .await?,
+        )?,
         Commands::Release { version } => {
             print_json(&get_client(site)?.get_release(&version).await?)?
         }
