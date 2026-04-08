@@ -283,65 +283,29 @@ fn handle_config_save(
     Ok(())
 }
 
-async fn handle_issue_command(
+async fn handle_issue_status_change(
     client: &api::Client,
     id: &str,
-    command: Option<IssueCommands>,
+    command: IssueCommands,
 ) -> Result<()> {
     match command {
-        None => println!(
-            "{}",
-            serde_json::to_string_pretty(&client.get_issue(id).await?)?
+        IssueCommands::Resolve => println!(
+            "Resolved {}",
+            client.resolve_issue(id).await?["shortId"].as_str().unwrap_or(id)
         ),
-        Some(IssueCommands::Latest) => println!(
-            "{}",
-            serde_json::to_string_pretty(&client.get_issue_latest_event(id).await?)?
+        IssueCommands::Unresolve => println!(
+            "Unresolved {}",
+            client.unresolve_issue(id).await?["shortId"].as_str().unwrap_or(id)
         ),
-        Some(IssueCommands::Events) => println!(
-            "{}",
-            serde_json::to_string_pretty(&client.get_issue_events(id).await?)?
+        IssueCommands::Ignore => println!(
+            "Ignored {}",
+            client.ignore_issue(id).await?["shortId"].as_str().unwrap_or(id)
         ),
-        Some(IssueCommands::Event { event_id }) => println!(
-            "{}",
-            serde_json::to_string_pretty(&client.get_issue_event(id, &event_id).await?)?
+        IssueCommands::Unignore => println!(
+            "Unignored {}",
+            client.unresolve_issue(id).await?["shortId"].as_str().unwrap_or(id)
         ),
-        Some(IssueCommands::Hashes) => println!(
-            "{}",
-            serde_json::to_string_pretty(&client.get_issue_hashes(id).await?)?
-        ),
-        Some(IssueCommands::Resolve) => {
-            println!(
-                "Resolved {}",
-                client.resolve_issue(id).await?["shortId"]
-                    .as_str()
-                    .unwrap_or(id)
-            );
-        }
-        Some(IssueCommands::Unresolve) => {
-            println!(
-                "Unresolved {}",
-                client.unresolve_issue(id).await?["shortId"]
-                    .as_str()
-                    .unwrap_or(id)
-            );
-        }
-        Some(IssueCommands::Ignore) => {
-            println!(
-                "Ignored {}",
-                client.ignore_issue(id).await?["shortId"]
-                    .as_str()
-                    .unwrap_or(id)
-            );
-        }
-        Some(IssueCommands::Unignore) => {
-            println!(
-                "Unignored {}",
-                client.unresolve_issue(id).await?["shortId"]
-                    .as_str()
-                    .unwrap_or(id)
-            );
-        }
-        Some(IssueCommands::Snooze { duration }) => {
+        IssueCommands::Snooze { duration } => {
             let minutes = parse_duration_to_minutes(&duration)?;
             let result = client.snooze_issue(id, minutes).await?;
             println!(
@@ -350,6 +314,25 @@ async fn handle_issue_command(
                 duration
             );
         }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+async fn handle_issue_command(
+    client: &api::Client,
+    id: &str,
+    command: Option<IssueCommands>,
+) -> Result<()> {
+    match command {
+        None => print_json(&client.get_issue(id).await?)?,
+        Some(IssueCommands::Latest) => print_json(&client.get_issue_latest_event(id).await?)?,
+        Some(IssueCommands::Events) => print_json(&client.get_issue_events(id).await?)?,
+        Some(IssueCommands::Event { event_id }) => {
+            print_json(&client.get_issue_event(id, &event_id).await?)?
+        }
+        Some(IssueCommands::Hashes) => print_json(&client.get_issue_hashes(id).await?)?,
+        Some(cmd) => handle_issue_status_change(client, id, cmd).await?,
     }
     Ok(())
 }
@@ -398,6 +381,38 @@ async fn handle_trace_command(client: &api::Client, trace_id: &str) -> Result<()
     Ok(())
 }
 
+fn print_json(value: &serde_json::Value) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+async fn handle_resolve_shortcut(client: &api::Client, id: &str) -> Result<()> {
+    println!(
+        "Resolved {}",
+        client.resolve_issue(id).await?["shortId"]
+            .as_str()
+            .unwrap_or(id)
+    );
+    Ok(())
+}
+
+async fn handle_snooze_shortcut(client: &api::Client, id: &str, duration: &str) -> Result<()> {
+    let minutes = parse_duration_to_minutes(duration)?;
+    let result = client.snooze_issue(id, minutes).await?;
+    println!(
+        "Snoozed {} for {}",
+        result["shortId"].as_str().unwrap_or(id),
+        duration
+    );
+    Ok(())
+}
+
+async fn handle_event_command(client: &api::Client, project: &str, event_id: &str) -> Result<()> {
+    let event = client.get_event(project, event_id).await?;
+    trace::print_event_spans(&event);
+    Ok(())
+}
+
 async fn dispatch(cli: Cli) -> Result<()> {
     let site = cli.site.as_deref();
     match cli.command {
@@ -417,26 +432,13 @@ async fn dispatch(cli: Cli) -> Result<()> {
         Commands::Issue { id, command } => {
             handle_issue_command(&get_client(site)?, &id, command).await?
         }
-        Commands::Projects => println!(
-            "{}",
-            serde_json::to_string_pretty(&get_client(site)?.list_projects().await?)?
-        ),
-        Commands::Issues { project, query } => println!(
-            "{}",
-            serde_json::to_string_pretty(
-                &get_client(site)?
-                    .list_issues(&project, query.as_deref())
-                    .await?
-            )?
-        ),
-        Commands::Monitors { environment } => println!(
-            "{}",
-            serde_json::to_string_pretty(
-                &get_client(site)?
-                    .list_monitors(environment.as_deref())
-                    .await?
-            )?
-        ),
+        Commands::Projects => print_json(&get_client(site)?.list_projects().await?)?,
+        Commands::Issues { project, query } => {
+            print_json(&get_client(site)?.list_issues(&project, query.as_deref()).await?)?
+        }
+        Commands::Monitors { environment } => {
+            print_json(&get_client(site)?.list_monitors(environment.as_deref()).await?)?
+        }
         Commands::Monitor { slug, command } => {
             handle_monitor_command(&get_client(site)?, &slug, command).await?
         }
@@ -444,43 +446,22 @@ async fn dispatch(cli: Cli) -> Result<()> {
         Commands::Integrations => {
             print_integrations(&get_client(site)?.list_integrations().await?)?
         }
-        Commands::Integration { slug } => println!(
-            "{}",
-            serde_json::to_string_pretty(&get_client(site)?.get_integration(&slug).await?)?
-        ),
-        Commands::Resolve { id } => {
-            println!(
-                "Resolved {}",
-                get_client(site)?.resolve_issue(&id).await?["shortId"]
-                    .as_str()
-                    .unwrap_or(&id)
-            );
+        Commands::Integration { slug } => {
+            print_json(&get_client(site)?.get_integration(&slug).await?)?
         }
+        Commands::Resolve { id } => handle_resolve_shortcut(&get_client(site)?, &id).await?,
         Commands::Snooze { id, duration } => {
-            let minutes = parse_duration_to_minutes(&duration)?;
-            let result = get_client(site)?.snooze_issue(&id, minutes).await?;
-            println!(
-                "Snoozed {} for {}",
-                result["shortId"].as_str().unwrap_or(&id),
-                duration
-            );
+            handle_snooze_shortcut(&get_client(site)?, &id, &duration).await?
         }
-        Commands::Releases { project, limit } => println!(
-            "{}",
-            serde_json::to_string_pretty(
-                &get_client(site)?
-                    .list_releases(project.as_deref(), limit)
-                    .await?
-            )?
-        ),
-        Commands::Release { version } => println!(
-            "{}",
-            serde_json::to_string_pretty(&get_client(site)?.get_release(&version).await?)?
-        ),
+        Commands::Releases { project, limit } => {
+            print_json(&get_client(site)?.list_releases(project.as_deref(), limit).await?)?
+        }
+        Commands::Release { version } => {
+            print_json(&get_client(site)?.get_release(&version).await?)?
+        }
         Commands::Trace { trace_id } => handle_trace_command(&get_client(site)?, &trace_id).await?,
         Commands::Event { project, event_id } => {
-            let event = get_client(site)?.get_event(&project, &event_id).await?;
-            trace::print_event_spans(&event);
+            handle_event_command(&get_client(site)?, &project, &event_id).await?
         }
     }
     Ok(())

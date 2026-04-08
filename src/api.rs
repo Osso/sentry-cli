@@ -31,13 +31,12 @@ impl Client {
         })
     }
 
-    async fn get(&self, endpoint: &str) -> Result<Value> {
+    async fn send(&self, method: reqwest::Method, endpoint: &str) -> Result<reqwest::Response> {
         let url = format!("{}{}", self.base_url, endpoint);
-
         let resp = self
             .send_with_retry(|| {
                 self.http
-                    .get(&url)
+                    .request(method.clone(), &url)
                     .header("Authorization", format!("Bearer {}", self.auth_token))
                     .header("Content-Type", "application/json")
                     .send()
@@ -51,35 +50,23 @@ impl Client {
             anyhow::bail!("HTTP {} - {}", status, body);
         }
 
-        resp.json().await.context("Failed to parse JSON response")
+        Ok(resp)
+    }
+
+    async fn get(&self, endpoint: &str) -> Result<Value> {
+        self.send(reqwest::Method::GET, endpoint)
+            .await?
+            .json()
+            .await
+            .context("Failed to parse JSON response")
     }
 
     async fn delete(&self, endpoint: &str) -> Result<reqwest::StatusCode> {
-        let url = format!("{}{}", self.base_url, endpoint);
-
-        let resp = self
-            .send_with_retry(|| {
-                self.http
-                    .delete(&url)
-                    .header("Authorization", format!("Bearer {}", self.auth_token))
-                    .header("Content-Type", "application/json")
-                    .send()
-            })
-            .await
-            .context("Failed to send request")?;
-
-        let status = resp.status();
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("HTTP {} - {}", status, body);
-        }
-
-        Ok(status)
+        Ok(self.send(reqwest::Method::DELETE, endpoint).await?.status())
     }
 
     async fn put(&self, endpoint: &str, body: &Value) -> Result<Value> {
         let url = format!("{}{}", self.base_url, endpoint);
-
         let resp = self
             .send_with_retry(|| {
                 self.http
