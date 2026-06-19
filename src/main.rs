@@ -252,35 +252,68 @@ fn handle_config_save(
     token: Option<String>,
     default: bool,
 ) -> Result<()> {
-    if let Some(s) = site {
-        cfg.set_site(s, org, token);
-        if default {
-            cfg.default_site = Some(s.to_string());
-        }
-        config::save_config(cfg)?;
-        println!("Config saved for site '{}'", s);
-    } else if org.is_some() || token.is_some() {
-        if let Some(o) = org {
-            cfg.organization = Some(o);
-        }
-        if let Some(t) = token {
-            cfg.auth_token = Some(t);
-        }
-        config::save_config(cfg)?;
-        println!("Config saved to ~/.config/sentry-cli-rs/config.json");
-    } else {
-        if let Some(s) = &cfg.default_site {
-            println!("Default site: {}", s);
-        }
-        let sites = cfg.list_sites();
-        if !sites.is_empty() {
-            println!("Sites: {}", sites.join(", "));
-        }
-        if cfg.organization.is_some() {
-            println!("Legacy org: {}", cfg.organization.as_deref().unwrap_or("?"));
-        }
+    if let Some(site_name) = site {
+        return save_site_config(cfg, site_name, org, token, default);
     }
+
+    if org.is_some() || token.is_some() {
+        return save_legacy_config(cfg, org, token);
+    }
+
+    print_config_summary(cfg);
     Ok(())
+}
+
+fn save_site_config(
+    cfg: &mut config::Config,
+    site: &str,
+    org: Option<String>,
+    token: Option<String>,
+    default: bool,
+) -> Result<()> {
+    cfg.set_site(site, org, token);
+    if default {
+        cfg.default_site = Some(site.to_string());
+    }
+    config::save_config(cfg)?;
+    println!("Config saved for site '{}'", site);
+    Ok(())
+}
+
+fn save_legacy_config(
+    cfg: &mut config::Config,
+    org: Option<String>,
+    token: Option<String>,
+) -> Result<()> {
+    if let Some(o) = org {
+        cfg.organization = Some(o);
+    }
+    if let Some(t) = token {
+        cfg.auth_token = Some(t);
+    }
+    config::save_config(cfg)?;
+    println!("Config saved to ~/.config/sentry/config.json");
+    Ok(())
+}
+
+fn print_config_summary(cfg: &config::Config) {
+    if let Some(site_name) = &cfg.default_site {
+        println!("Default site: {}", site_name);
+    }
+
+    let sites = cfg.list_sites();
+    if !sites.is_empty() {
+        println!("Sites: {}", sites.join(", "));
+    }
+
+    if let Some(org) = cfg.organization.as_deref() {
+        println!("Legacy org: {}", org);
+    }
+}
+
+fn print_issue_action(action: &str, issue: &serde_json::Value, fallback: &str) {
+    let short_id = issue["shortId"].as_str().unwrap_or(fallback);
+    println!("{} {}", action, short_id);
 }
 
 async fn handle_issue_status_change(
@@ -289,38 +322,27 @@ async fn handle_issue_status_change(
     command: IssueCommands,
 ) -> Result<()> {
     match command {
-        IssueCommands::Resolve => println!(
-            "Resolved {}",
-            client.resolve_issue(id).await?["shortId"]
-                .as_str()
-                .unwrap_or(id)
-        ),
-        IssueCommands::Unresolve => println!(
-            "Unresolved {}",
-            client.unresolve_issue(id).await?["shortId"]
-                .as_str()
-                .unwrap_or(id)
-        ),
-        IssueCommands::Ignore => println!(
-            "Ignored {}",
-            client.ignore_issue(id).await?["shortId"]
-                .as_str()
-                .unwrap_or(id)
-        ),
-        IssueCommands::Unignore => println!(
-            "Unignored {}",
-            client.unresolve_issue(id).await?["shortId"]
-                .as_str()
-                .unwrap_or(id)
-        ),
+        IssueCommands::Resolve => {
+            let issue = client.resolve_issue(id).await?;
+            print_issue_action("Resolved", &issue, id);
+        }
+        IssueCommands::Unresolve => {
+            let issue = client.unresolve_issue(id).await?;
+            print_issue_action("Unresolved", &issue, id);
+        }
+        IssueCommands::Ignore => {
+            let issue = client.ignore_issue(id).await?;
+            print_issue_action("Ignored", &issue, id);
+        }
+        IssueCommands::Unignore => {
+            let issue = client.unresolve_issue(id).await?;
+            print_issue_action("Unignored", &issue, id);
+        }
         IssueCommands::Snooze { duration } => {
             let minutes = parse_duration_to_minutes(&duration)?;
             let result = client.snooze_issue(id, minutes).await?;
-            println!(
-                "Snoozed {} for {}",
-                result["shortId"].as_str().unwrap_or(id),
-                duration
-            );
+            let short_id = result["shortId"].as_str().unwrap_or(id);
+            println!("Snoozed {} for {}", short_id, duration);
         }
         _ => unreachable!(),
     }
@@ -346,23 +368,26 @@ async fn handle_issue_command(
 }
 
 fn print_integrations(integrations: &serde_json::Value) -> Result<()> {
-    if let Some(arr) = integrations.as_array() {
-        if arr.is_empty() {
-            println!("No internal integrations found.");
-        } else {
-            for int in arr {
-                let name = int["name"].as_str().unwrap_or("?");
-                let slug = int["slug"].as_str().unwrap_or("?");
-                let webhook = int["webhookUrl"].as_str().unwrap_or("-");
-                println!("{} ({})", name, slug);
-                if webhook != "-" {
-                    println!("  webhook: {}", webhook);
-                }
-            }
-        }
-    } else {
+    let Some(items) = integrations.as_array() else {
         println!("{}", serde_json::to_string_pretty(integrations)?);
+        return Ok(());
+    };
+
+    if items.is_empty() {
+        println!("No internal integrations found.");
+        return Ok(());
     }
+
+    for integration in items {
+        let name = integration["name"].as_str().unwrap_or("?");
+        let slug = integration["slug"].as_str().unwrap_or("?");
+        let webhook = integration["webhookUrl"].as_str().unwrap_or("-");
+        println!("{} ({})", name, slug);
+        if webhook != "-" {
+            println!("  webhook: {}", webhook);
+        }
+    }
+
     Ok(())
 }
 
@@ -421,6 +446,84 @@ async fn handle_event_command(client: &api::Client, project: &str, event_id: &st
     Ok(())
 }
 
+fn handle_config_command(
+    site: Option<&str>,
+    org: Option<String>,
+    token: Option<String>,
+    default: bool,
+    list: bool,
+) -> Result<()> {
+    let mut cfg = config::load_config().unwrap_or_default();
+    if list {
+        print_config_sites(&cfg);
+        return Ok(());
+    }
+    handle_config_save(&mut cfg, site, org, token, default)
+}
+
+async fn dispatch_client_core(client: &api::Client, command: Commands) -> Result<()> {
+    match command {
+        Commands::Issue { id, command } => handle_issue_command(client, &id, command).await?,
+        Commands::Projects => print_json(&client.list_projects().await?)?,
+        Commands::Issues { project, query } => {
+            print_json(&client.list_issues(&project, query.as_deref()).await?)?
+        }
+        Commands::Monitors { environment } => {
+            print_json(&client.list_monitors(environment.as_deref()).await?)?
+        }
+        Commands::Monitor { slug, command } => handle_monitor_command(client, &slug, command).await?,
+        other => dispatch_client_extended(client, other).await?,
+    }
+    Ok(())
+}
+
+async fn dispatch_client_extended(client: &api::Client, command: Commands) -> Result<()> {
+    match command {
+        Commands::Integrations
+        | Commands::Integration { .. }
+        | Commands::Resolve { .. }
+        | Commands::Snooze { .. } => dispatch_client_management(client, command).await?,
+        Commands::Releases { .. }
+        | Commands::Release { .. }
+        | Commands::Trace { .. }
+        | Commands::Event { .. } => dispatch_client_inspection(client, command).await?,
+        Commands::Issue { .. }
+        | Commands::Projects
+        | Commands::Issues { .. }
+        | Commands::Monitors { .. }
+        | Commands::Monitor { .. }
+        | Commands::Config { .. }
+        | Commands::Events { .. } => unreachable!(),
+    }
+    Ok(())
+}
+
+async fn dispatch_client_management(client: &api::Client, command: Commands) -> Result<()> {
+    match command {
+        Commands::Integrations => print_integrations(&client.list_integrations().await?)?,
+        Commands::Integration { slug } => print_json(&client.get_integration(&slug).await?)?,
+        Commands::Resolve { id } => handle_resolve_shortcut(client, &id).await?,
+        Commands::Snooze { id, duration } => handle_snooze_shortcut(client, &id, &duration).await?,
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+async fn dispatch_client_inspection(client: &api::Client, command: Commands) -> Result<()> {
+    match command {
+        Commands::Releases { project, limit } => {
+            print_json(&client.list_releases(project.as_deref(), limit).await?)?
+        }
+        Commands::Release { version } => print_json(&client.get_release(&version).await?)?,
+        Commands::Trace { trace_id } => handle_trace_command(client, &trace_id).await?,
+        Commands::Event { project, event_id } => {
+            handle_event_command(client, &project, &event_id).await?
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
 async fn dispatch(cli: Cli) -> Result<()> {
     let site = cli.site.as_deref();
     match cli.command {
@@ -429,53 +532,11 @@ async fn dispatch(cli: Cli) -> Result<()> {
             token,
             default,
             list,
-        } => {
-            let mut cfg = config::load_config().unwrap_or_default();
-            if list {
-                print_config_sites(&cfg);
-            } else {
-                handle_config_save(&mut cfg, site, org, token, default)?;
-            }
-        }
-        Commands::Issue { id, command } => {
-            handle_issue_command(&get_client(site)?, &id, command).await?
-        }
-        Commands::Projects => print_json(&get_client(site)?.list_projects().await?)?,
-        Commands::Issues { project, query } => print_json(
-            &get_client(site)?
-                .list_issues(&project, query.as_deref())
-                .await?,
-        )?,
-        Commands::Monitors { environment } => print_json(
-            &get_client(site)?
-                .list_monitors(environment.as_deref())
-                .await?,
-        )?,
-        Commands::Monitor { slug, command } => {
-            handle_monitor_command(&get_client(site)?, &slug, command).await?
-        }
+        } => handle_config_command(site, org, token, default, list)?,
         Commands::Events { id } => print_events_redirect(id),
-        Commands::Integrations => {
-            print_integrations(&get_client(site)?.list_integrations().await?)?
-        }
-        Commands::Integration { slug } => {
-            print_json(&get_client(site)?.get_integration(&slug).await?)?
-        }
-        Commands::Resolve { id } => handle_resolve_shortcut(&get_client(site)?, &id).await?,
-        Commands::Snooze { id, duration } => {
-            handle_snooze_shortcut(&get_client(site)?, &id, &duration).await?
-        }
-        Commands::Releases { project, limit } => print_json(
-            &get_client(site)?
-                .list_releases(project.as_deref(), limit)
-                .await?,
-        )?,
-        Commands::Release { version } => {
-            print_json(&get_client(site)?.get_release(&version).await?)?
-        }
-        Commands::Trace { trace_id } => handle_trace_command(&get_client(site)?, &trace_id).await?,
-        Commands::Event { project, event_id } => {
-            handle_event_command(&get_client(site)?, &project, &event_id).await?
+        command => {
+            let client = get_client(site)?;
+            dispatch_client_core(&client, command).await?;
         }
     }
     Ok(())
@@ -503,7 +564,7 @@ async fn handle_monitor_command(
     Ok(())
 }
 
-fn print_events_redirect(id: Option<String>) {
+fn print_events_redirect(id: Option<String>) -> ! {
     eprintln!("Error: 'events' is a subcommand of 'issue', not a top-level command.");
     eprintln!();
     if let Some(issue_id) = id {

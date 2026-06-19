@@ -31,26 +31,33 @@ impl Client {
         })
     }
 
+    fn authorized_request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
+        self.http
+            .request(method, url)
+            .header("Authorization", format!("Bearer {}", self.auth_token))
+            .header("Content-Type", "application/json")
+    }
+
+    async fn ensure_success(&self, resp: reqwest::Response) -> Result<reqwest::Response> {
+        if resp.status().is_success() {
+            return Ok(resp);
+        }
+
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("HTTP {} - {}", status, body);
+    }
+
     async fn send(&self, method: reqwest::Method, endpoint: &str) -> Result<reqwest::Response> {
         let url = format!("{}{}", self.base_url, endpoint);
         let resp = self
             .send_with_retry(|| {
-                self.http
-                    .request(method.clone(), &url)
-                    .header("Authorization", format!("Bearer {}", self.auth_token))
-                    .header("Content-Type", "application/json")
-                    .send()
+                self.authorized_request(method.clone(), &url).send()
             })
             .await
             .context("Failed to send request")?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("HTTP {} - {}", status, body);
-        }
-
-        Ok(resp)
+        self.ensure_success(resp).await
     }
 
     async fn get(&self, endpoint: &str) -> Result<Value> {
@@ -69,22 +76,13 @@ impl Client {
         let url = format!("{}{}", self.base_url, endpoint);
         let resp = self
             .send_with_retry(|| {
-                self.http
-                    .put(&url)
-                    .header("Authorization", format!("Bearer {}", self.auth_token))
-                    .header("Content-Type", "application/json")
+                self.authorized_request(reqwest::Method::PUT, &url)
                     .json(body)
                     .send()
             })
             .await
             .context("Failed to send request")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("HTTP {} - {}", status, body);
-        }
-
+        let resp = self.ensure_success(resp).await?;
         resp.json().await.context("Failed to parse JSON response")
     }
 
@@ -98,30 +96,23 @@ impl Client {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
     {
-        let mut last_error = None;
-
         for attempt in 0..=MAX_RETRIES {
             match make_request().await {
                 Ok(resp) => return Ok(resp),
-                Err(err) => {
-                    if attempt < MAX_RETRIES && is_connection_timeout(&err) {
-                        let delay = INITIAL_BACKOFF_SECS * 2u64.pow(attempt);
-                        eprintln!(
-                            "Connection timeout, retrying ({}/{})...",
-                            attempt + 1,
-                            MAX_RETRIES
-                        );
-                        tokio::time::sleep(Duration::from_secs(delay)).await;
-                        last_error = Some(err);
-                    } else {
-                        return Err(err);
-                    }
+                Err(err) if attempt < MAX_RETRIES && is_connection_timeout(&err) => {
+                    let delay = INITIAL_BACKOFF_SECS * 2u64.pow(attempt);
+                    eprintln!(
+                        "Connection timeout, retrying ({}/{})...",
+                        attempt + 1,
+                        MAX_RETRIES
+                    );
+                    tokio::time::sleep(Duration::from_secs(delay)).await;
                 }
+                Err(err) => return Err(err),
             }
         }
 
-        // This should only be reached if all retries failed
-        Err(last_error.expect("should have an error after retries"))
+        unreachable!("retry loop should return success or error")
     }
 
     /// Get issue details by ID

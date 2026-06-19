@@ -75,6 +75,22 @@ fn compute_duration_ms(start: &Value, end: &Value) -> f64 {
     (e - s) * 1000.0
 }
 
+fn slow_marker(duration_ms: f64) -> &'static str {
+    if duration_ms > SLOW_SPAN_MS {
+        " ⚠ SLOW"
+    } else {
+        ""
+    }
+}
+
+fn status_marker(status: &str) -> String {
+    if !status.is_empty() && status != "ok" {
+        format!(" [{}]", status)
+    } else {
+        String::new()
+    }
+}
+
 fn print_span_tree(spans: &[Span], parent_id: Option<&str>, prefix: &str, is_last: bool) {
     let children: Vec<&Span> = spans
         .iter()
@@ -92,16 +108,8 @@ fn print_span_tree(spans: &[Span], parent_id: Option<&str>, prefix: &str, is_las
             format!("{}│   ", prefix)
         };
 
-        let slow_marker = if span.duration_ms > SLOW_SPAN_MS {
-            " ⚠ SLOW"
-        } else {
-            ""
-        };
-        let status_str = if !span.status.is_empty() && span.status != "ok" {
-            format!(" [{}]", span.status)
-        } else {
-            String::new()
-        };
+        let slow_marker = slow_marker(span.duration_ms);
+        let status_str = status_marker(&span.status);
 
         println!(
             "{}{}{} — {} ({:.1}ms){}{}",
@@ -114,21 +122,16 @@ fn print_span_tree(spans: &[Span], parent_id: Option<&str>, prefix: &str, is_las
 
 /// Extract spans from an event's `entries` array (type: "spans")
 fn extract_event_spans(event: &Value) -> Vec<Span> {
-    let mut spans = Vec::new();
+    let Some(entries) = event["entries"].as_array() else {
+        return Vec::new();
+    };
 
-    if let Some(entries) = event["entries"].as_array() {
-        for entry in entries {
-            if entry["type"].as_str() == Some("spans") {
-                if let Some(span_list) = entry["data"].as_array() {
-                    for s in span_list {
-                        spans.push(parse_span(s));
-                    }
-                }
-            }
-        }
-    }
-
-    spans
+    entries
+        .iter()
+        .filter(|entry| entry["type"].as_str() == Some("spans"))
+        .flat_map(|entry| entry["data"].as_array().into_iter().flatten())
+        .map(parse_span)
+        .collect()
 }
 
 pub fn print_event_spans(event: &Value) {
@@ -140,11 +143,7 @@ pub fn print_event_spans(event: &Value) {
         .as_str()
         .unwrap_or(event["message"].as_str().unwrap_or(""));
     let root_duration = compute_duration_ms(&event["startTimestamp"], &event["timestamp"]);
-    let slow_marker = if root_duration > SLOW_SPAN_MS {
-        " ⚠ SLOW"
-    } else {
-        ""
-    };
+    let slow_marker = slow_marker(root_duration);
 
     println!(
         "{} — {} ({:.1}ms){}",
@@ -188,6 +187,30 @@ pub fn extract_transaction_event_refs(data: &Value) -> Vec<(String, String, Stri
     refs
 }
 
+fn is_root_span(span: &Span, spans: &[Span]) -> bool {
+    span.parent_span_id.is_none()
+        || !spans
+            .iter()
+            .any(|parent| Some(&parent.span_id) == span.parent_span_id.as_ref())
+}
+
+fn root_ids(spans: &[Span]) -> Vec<&str> {
+    spans
+        .iter()
+        .filter(|span| is_root_span(span, spans))
+        .map(|span| span.span_id.as_str())
+        .collect()
+}
+
+fn print_root_span(root: &Span) {
+    let slow_marker = slow_marker(root.duration_ms);
+    let status_str = status_marker(&root.status);
+    println!(
+        "{} — {} ({:.1}ms){}{}",
+        root.op, root.description, root.duration_ms, status_str, slow_marker
+    );
+}
+
 pub fn print_trace(data: &Value, events: &HashMap<String, Value>) {
     let spans = extract_spans(data, events);
 
@@ -197,35 +220,13 @@ pub fn print_trace(data: &Value, events: &HashMap<String, Value>) {
         return;
     }
 
-    let root_ids: Vec<&str> = spans
-        .iter()
-        .filter(|s| {
-            s.parent_span_id.is_none()
-                || !spans
-                    .iter()
-                    .any(|p| Some(&p.span_id) == s.parent_span_id.as_ref())
-        })
-        .map(|s| s.span_id.as_str())
-        .collect();
+    let root_ids = root_ids(&spans);
 
     println!("Trace ({} spans):", spans.len());
     for (i, root_id) in root_ids.iter().enumerate() {
         let root = spans.iter().find(|s| s.span_id == *root_id).unwrap();
         let last = i == root_ids.len() - 1;
-        let slow_marker = if root.duration_ms > SLOW_SPAN_MS {
-            " ⚠ SLOW"
-        } else {
-            ""
-        };
-        let status_str = if !root.status.is_empty() && root.status != "ok" {
-            format!(" [{}]", root.status)
-        } else {
-            String::new()
-        };
-        println!(
-            "{} — {} ({:.1}ms){}{}",
-            root.op, root.description, root.duration_ms, status_str, slow_marker
-        );
+        print_root_span(root);
         print_span_tree(&spans, Some(root_id), "", last);
     }
 }

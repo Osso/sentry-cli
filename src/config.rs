@@ -69,7 +69,7 @@ impl Config {
 fn config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("sentry-cli-rs")
+        .join("sentry")
 }
 
 fn config_path() -> PathBuf {
@@ -82,45 +82,68 @@ fn sentryclirc_path() -> PathBuf {
         .join(".sentryclirc")
 }
 
+fn parse_ini_value(line: &str, key: &str) -> Option<String> {
+    let (parsed_key, value) = line.split_once('=')?;
+    (parsed_key.trim() == key).then(|| value.trim().to_string())
+}
+
+fn is_section_header(line: &str) -> bool {
+    line.starts_with('[') && line.ends_with(']')
+}
+
+fn parse_sentryclirc(content: &str) -> Config {
+    let mut config = Config::default();
+    let mut in_auth_section = false;
+    let mut in_defaults_section = false;
+
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+
+        if is_section_header(line) {
+            in_auth_section = line == "[auth]";
+            in_defaults_section = line == "[defaults]";
+            continue;
+        }
+
+        if in_auth_section {
+            if let Some(token) = parse_ini_value(line, "token") {
+                config.auth_token = Some(token);
+            }
+        }
+
+        if in_defaults_section {
+            if let Some(org) = parse_ini_value(line, "org") {
+                config.organization = Some(org);
+            }
+        }
+    }
+
+    config
+}
+
+fn load_from_json_config(path: &PathBuf) -> Result<Config> {
+    let content = fs::read_to_string(path)?;
+    Ok(serde_json::from_str(&content)?)
+}
+
+fn load_from_sentryclirc(path: &PathBuf) -> Result<Option<Config>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(path)?;
+    Ok(Some(parse_sentryclirc(&content)))
+}
+
 /// Load config from our config file, falling back to ~/.sentryclirc
 pub fn load_config() -> Result<Config> {
     let path = config_path();
     if path.exists() {
-        let content = fs::read_to_string(&path)?;
-        return Ok(serde_json::from_str(&content)?);
+        return load_from_json_config(&path);
     }
 
-    // Fall back to ~/.sentryclirc (INI format with [auth] and [defaults] sections)
     let sentryclirc = sentryclirc_path();
-    if sentryclirc.exists() {
-        let content = fs::read_to_string(&sentryclirc)?;
-        let mut config = Config::default();
-        let mut in_auth_section = false;
-        let mut in_defaults_section = false;
-
-        for line in content.lines() {
-            let line = line.trim();
-
-            // Track sections
-            if line.starts_with('[') && line.ends_with(']') {
-                in_auth_section = line == "[auth]";
-                in_defaults_section = line == "[defaults]";
-                continue;
-            }
-
-            // Parse token from [auth] section
-            if in_auth_section && (line.starts_with("token=") || line.starts_with("token =")) {
-                let token = line.splitn(2, '=').nth(1).map(|s| s.trim().to_string());
-                config.auth_token = token;
-            }
-
-            // Parse org from [defaults] section
-            if in_defaults_section && (line.starts_with("org=") || line.starts_with("org =")) {
-                let org = line.splitn(2, '=').nth(1).map(|s| s.trim().to_string());
-                config.organization = org;
-            }
-        }
-
+    if let Some(config) = load_from_sentryclirc(&sentryclirc)? {
         return Ok(config);
     }
 
