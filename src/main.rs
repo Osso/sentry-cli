@@ -2,11 +2,14 @@ mod api;
 mod config;
 mod trace;
 
+#[cfg(not(test))]
 use std::collections::HashMap;
 
 use anyhow::{Result, bail};
+#[cfg(not(test))]
 use clap::{Parser, Subcommand};
 
+#[cfg(not(test))]
 #[derive(Parser)]
 #[command(name = "sentry")]
 #[command(about = "CLI tool to access Sentry API")]
@@ -19,6 +22,7 @@ struct Cli {
     command: Commands,
 }
 
+#[cfg(not(test))]
 #[derive(Subcommand)]
 enum Commands {
     /// Configure organization and auth token
@@ -120,6 +124,7 @@ enum Commands {
     },
 }
 
+#[cfg(not(test))]
 #[derive(Subcommand)]
 enum IssueCommands {
     /// Get the latest event for this issue
@@ -149,6 +154,7 @@ enum IssueCommands {
     },
 }
 
+#[cfg(not(test))]
 #[derive(Subcommand)]
 enum MonitorCommands {
     /// List recent check-ins for this monitor
@@ -187,6 +193,7 @@ fn parse_duration_to_minutes(s: &str) -> Result<u64> {
     }
 }
 
+#[cfg(not(test))]
 fn get_client(site: Option<&str>) -> Result<api::Client> {
     let cfg = config::load_config()?;
     let site_cfg = cfg.get_site(site);
@@ -216,6 +223,7 @@ fn get_client(site: Option<&str>) -> Result<api::Client> {
     api::Client::new(&org, &token)
 }
 
+#[cfg(not(test))]
 fn print_config_sites(cfg: &config::Config) {
     let sites = cfg.list_sites();
     if sites.is_empty() {
@@ -245,6 +253,7 @@ fn print_config_sites(cfg: &config::Config) {
     }
 }
 
+#[cfg(not(test))]
 fn handle_config_save(
     cfg: &mut config::Config,
     site: Option<&str>,
@@ -264,6 +273,7 @@ fn handle_config_save(
     Ok(())
 }
 
+#[cfg(not(test))]
 fn save_site_config(
     cfg: &mut config::Config,
     site: &str,
@@ -280,6 +290,7 @@ fn save_site_config(
     Ok(())
 }
 
+#[cfg(not(test))]
 fn save_legacy_config(
     cfg: &mut config::Config,
     org: Option<String>,
@@ -296,6 +307,7 @@ fn save_legacy_config(
     Ok(())
 }
 
+#[cfg(not(test))]
 fn print_config_summary(cfg: &config::Config) {
     if let Some(site_name) = &cfg.default_site {
         println!("Default site: {}", site_name);
@@ -311,11 +323,13 @@ fn print_config_summary(cfg: &config::Config) {
     }
 }
 
+#[cfg(not(test))]
 fn print_issue_action(action: &str, issue: &serde_json::Value, fallback: &str) {
     let short_id = issue["shortId"].as_str().unwrap_or(fallback);
     println!("{} {}", action, short_id);
 }
 
+#[cfg(not(test))]
 async fn handle_issue_status_change(
     client: &api::Client,
     id: &str,
@@ -349,6 +363,7 @@ async fn handle_issue_status_change(
     Ok(())
 }
 
+#[cfg(not(test))]
 async fn handle_issue_command(
     client: &api::Client,
     id: &str,
@@ -367,6 +382,7 @@ async fn handle_issue_command(
     Ok(())
 }
 
+#[cfg(not(test))]
 fn print_integrations(integrations: &serde_json::Value) -> Result<()> {
     let Some(items) = integrations.as_array() else {
         println!("{}", serde_json::to_string_pretty(integrations)?);
@@ -391,6 +407,7 @@ fn print_integrations(integrations: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(test))]
 async fn fetch_trace_events(
     client: &api::Client,
     data: &serde_json::Value,
@@ -407,6 +424,7 @@ async fn fetch_trace_events(
     events
 }
 
+#[cfg(not(test))]
 async fn handle_trace_command(client: &api::Client, trace_id: &str) -> Result<()> {
     let data = client.get_trace(trace_id).await?;
     let events = fetch_trace_events(client, &data).await;
@@ -419,6 +437,7 @@ fn print_json(value: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(test))]
 async fn handle_resolve_shortcut(client: &api::Client, id: &str) -> Result<()> {
     println!(
         "Resolved {}",
@@ -429,6 +448,7 @@ async fn handle_resolve_shortcut(client: &api::Client, id: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(test))]
 async fn handle_snooze_shortcut(client: &api::Client, id: &str, duration: &str) -> Result<()> {
     let minutes = parse_duration_to_minutes(duration)?;
     let result = client.snooze_issue(id, minutes).await?;
@@ -440,12 +460,14 @@ async fn handle_snooze_shortcut(client: &api::Client, id: &str, duration: &str) 
     Ok(())
 }
 
+#[cfg(not(test))]
 async fn handle_event_command(client: &api::Client, project: &str, event_id: &str) -> Result<()> {
     let event = client.get_event(project, event_id).await?;
     trace::print_event_spans(&event);
     Ok(())
 }
 
+#[cfg(not(test))]
 fn handle_config_command(
     site: Option<&str>,
     org: Option<String>,
@@ -461,6 +483,7 @@ fn handle_config_command(
     handle_config_save(&mut cfg, site, org, token, default)
 }
 
+#[cfg(not(test))]
 async fn dispatch_client_core(client: &api::Client, command: Commands) -> Result<()> {
     match command {
         Commands::Issue { id, command } => handle_issue_command(client, &id, command).await?,
@@ -471,12 +494,15 @@ async fn dispatch_client_core(client: &api::Client, command: Commands) -> Result
         Commands::Monitors { environment } => {
             print_json(&client.list_monitors(environment.as_deref()).await?)?
         }
-        Commands::Monitor { slug, command } => handle_monitor_command(client, &slug, command).await?,
+        Commands::Monitor { slug, command } => {
+            handle_monitor_command(client, &slug, command).await?
+        }
         other => dispatch_client_extended(client, other).await?,
     }
     Ok(())
 }
 
+#[cfg(not(test))]
 async fn dispatch_client_extended(client: &api::Client, command: Commands) -> Result<()> {
     match command {
         Commands::Integrations
@@ -498,6 +524,7 @@ async fn dispatch_client_extended(client: &api::Client, command: Commands) -> Re
     Ok(())
 }
 
+#[cfg(not(test))]
 async fn dispatch_client_management(client: &api::Client, command: Commands) -> Result<()> {
     match command {
         Commands::Integrations => print_integrations(&client.list_integrations().await?)?,
@@ -509,6 +536,7 @@ async fn dispatch_client_management(client: &api::Client, command: Commands) -> 
     Ok(())
 }
 
+#[cfg(not(test))]
 async fn dispatch_client_inspection(client: &api::Client, command: Commands) -> Result<()> {
     match command {
         Commands::Releases { project, limit } => {
@@ -524,6 +552,7 @@ async fn dispatch_client_inspection(client: &api::Client, command: Commands) -> 
     Ok(())
 }
 
+#[cfg(not(test))]
 async fn dispatch(cli: Cli) -> Result<()> {
     let site = cli.site.as_deref();
     match cli.command {
@@ -542,6 +571,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(test))]
 async fn handle_monitor_command(
     client: &api::Client,
     slug: &str,
@@ -564,6 +594,7 @@ async fn handle_monitor_command(
     Ok(())
 }
 
+#[cfg(not(test))]
 fn print_events_redirect(id: Option<String>) -> ! {
     eprintln!("Error: 'events' is a subcommand of 'issue', not a top-level command.");
     eprintln!();
@@ -575,6 +606,7 @@ fn print_events_redirect(id: Option<String>) -> ! {
     std::process::exit(1);
 }
 
+#[cfg(not(test))]
 #[tokio::main]
 async fn main() -> Result<()> {
     dispatch(Cli::parse()).await
@@ -609,5 +641,10 @@ mod tests {
         assert!(parse_duration_to_minutes("abc").is_err());
         assert!(parse_duration_to_minutes("30x").is_err());
         assert!(parse_duration_to_minutes("d").is_err());
+    }
+
+    #[test]
+    fn test_print_json_accepts_values() {
+        print_json(&serde_json::json!({"ok": true})).unwrap();
     }
 }

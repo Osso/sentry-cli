@@ -20,6 +20,7 @@ fn is_connection_timeout(err: &reqwest::Error) -> bool {
 }
 
 impl Client {
+    #[cfg(not(test))]
     pub fn new(organization: &str, auth_token: &str) -> Result<Self> {
         let http = reqwest::Client::builder().build()?;
 
@@ -29,6 +30,19 @@ impl Client {
             auth_token: auth_token.to_string(),
             organization: organization.to_string(),
         })
+    }
+
+    #[cfg(test)]
+    fn for_test(base_url: String) -> Self {
+        Self {
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .expect("test client should build"),
+            base_url,
+            auth_token: "test-token".to_string(),
+            organization: "test-org".to_string(),
+        }
     }
 
     fn authorized_request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
@@ -51,9 +65,7 @@ impl Client {
     async fn send(&self, method: reqwest::Method, endpoint: &str) -> Result<reqwest::Response> {
         let url = format!("{}{}", self.base_url, endpoint);
         let resp = self
-            .send_with_retry(|| {
-                self.authorized_request(method.clone(), &url).send()
-            })
+            .send_with_retry(|| self.authorized_request(method.clone(), &url).send())
             .await
             .context("Failed to send request")?;
 
@@ -342,6 +354,10 @@ fn monitor_checkins_endpoint(org: &str, slug: &str, limit: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
 
     #[test]
     fn test_monitors_endpoint_without_env() {
@@ -392,5 +408,326 @@ mod tests {
             endpoint,
             "/organizations/globalcomix/monitors/my-cron/checkins/?per_page=20"
         );
+    }
+
+    #[tokio::test]
+    async fn client_sends_auth_headers_and_reads_json() {
+        let server = MockSentry::start(handler);
+        let client = Client::for_test(server.base_url());
+
+        let issue = client.get_issue("ISSUE-1").await.unwrap();
+        let latest = client.get_issue_latest_event("ISSUE-1").await.unwrap();
+        let events = client.get_issue_events("ISSUE-1").await.unwrap();
+        let event = client.get_issue_event("ISSUE-1", "event-1").await.unwrap();
+        let hashes = client.get_issue_hashes("ISSUE-1").await.unwrap();
+        let projects = client.list_projects().await.unwrap();
+
+        assert_eq!(issue["id"], "1001");
+        assert_eq!(latest["eventID"], "latest");
+        assert_eq!(events["items"][0]["id"], "event-list");
+        assert_eq!(event["eventID"], "event-1");
+        assert_eq!(hashes["hashes"][0], "hash-1");
+        assert_eq!(projects["projects"][0]["slug"], "web");
+        assert!(
+            server
+                .requests()
+                .iter()
+                .any(|request| request.contains("authorization: bearer test-token"))
+        );
+    }
+
+    #[tokio::test]
+    async fn client_updates_issue_statuses_and_snoozes_short_ids() {
+        let server = MockSentry::start(handler);
+        let client = Client::for_test(server.base_url());
+
+        let resolved = client.resolve_issue("ISSUE-1").await.unwrap();
+        let ignored = client.ignore_issue("1001").await.unwrap();
+        let unresolved = client.unresolve_issue("1001").await.unwrap();
+        let snoozed = client.snooze_issue("ISSUE-1", 60).await.unwrap();
+
+        assert_eq!(resolved["status"], "resolved");
+        assert_eq!(ignored["status"], "ignored");
+        assert_eq!(unresolved["status"], "unresolved");
+        assert_eq!(snoozed["statusDetails"]["ignoreDuration"], 60);
+        let requests = server.requests();
+        assert!(requests.iter().any(|request| {
+            request.starts_with("get /api/0/organizations/test-org/issues/issue-1/")
+        }));
+        assert!(requests.iter().any(|request| {
+            request.starts_with("put /api/0/issues/1001/")
+                && request.contains("\"status\":\"resolved\"")
+        }));
+    }
+
+    #[tokio::test]
+    async fn client_covers_monitor_release_integration_and_trace_endpoints() {
+        let server = MockSentry::start(handler);
+        let client = Client::for_test(server.base_url());
+
+        assert_eq!(
+            client.list_issues("web", None).await.unwrap()["query"],
+            "is:unresolved"
+        );
+        assert_eq!(
+            client
+                .list_issues("web", Some("assigned:me"))
+                .await
+                .unwrap()["query"],
+            "assigned:me"
+        );
+        assert_eq!(
+            client.list_monitors(Some("prod env")).await.unwrap()["kind"],
+            "monitors"
+        );
+        assert_eq!(client.get_monitor("daily").await.unwrap()["slug"], "daily");
+        assert_eq!(
+            client
+                .list_monitor_checkins("daily", Some(3))
+                .await
+                .unwrap()["limit"],
+            3
+        );
+        assert_eq!(
+            client.delete_monitor("daily").await.unwrap(),
+            reqwest::StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            client.list_integrations().await.unwrap()["items"][0]["slug"],
+            "app"
+        );
+        assert_eq!(client.get_integration("app").await.unwrap()["slug"], "app");
+        assert_eq!(
+            client.list_releases(Some("web"), Some(5)).await.unwrap()["project"],
+            "web"
+        );
+        assert_eq!(
+            client.get_release("v1.0+build").await.unwrap()["version"],
+            "v1.0+build"
+        );
+        assert_eq!(
+            client.get_trace("trace-1").await.unwrap()["trace"],
+            "trace-1"
+        );
+        assert_eq!(
+            client.get_event("web", "event-1").await.unwrap()["eventID"],
+            "event-1"
+        );
+    }
+
+    #[tokio::test]
+    async fn client_reports_http_errors_with_body() {
+        let server = MockSentry::start(handler);
+        let client = Client::for_test(server.base_url());
+
+        let err = client.get_issue("missing").await.unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("HTTP 404 Not Found - missing issue")
+        );
+    }
+
+    fn handler(line: &str, body: &str) -> (&'static str, String) {
+        if let Some(response) = issue_response(line, body) {
+            return response;
+        }
+        if let Some(response) = monitor_response(line) {
+            return response;
+        }
+        if let Some(response) = org_resource_response(line) {
+            return response;
+        }
+        ("500 Internal Server Error", format!("unexpected: {line}"))
+    }
+
+    fn issue_response(line: &str, body: &str) -> Option<(&'static str, String)> {
+        if line.starts_with("GET /api/0/organizations/test-org/issues/missing/") {
+            return Some(("404 Not Found", "missing issue".to_string()));
+        }
+        if line.starts_with("GET /api/0/organizations/test-org/issues/ISSUE-1/") {
+            return Some((
+                "200 OK",
+                serde_json::json!({"id": "1001", "shortId": "ISSUE-1"}).to_string(),
+            ));
+        }
+        issue_event_response(line, body)
+    }
+
+    fn issue_event_response(line: &str, body: &str) -> Option<(&'static str, String)> {
+        if line.starts_with("GET /api/0/issues/ISSUE-1/events/latest/") {
+            return Some((
+                "200 OK",
+                serde_json::json!({"eventID": "latest"}).to_string(),
+            ));
+        }
+        if line.starts_with("GET /api/0/issues/ISSUE-1/events/event-1/") {
+            return Some((
+                "200 OK",
+                serde_json::json!({"eventID": "event-1"}).to_string(),
+            ));
+        }
+        if line.starts_with("GET /api/0/issues/ISSUE-1/events/") {
+            return Some((
+                "200 OK",
+                serde_json::json!({"items": [{"id": "event-list"}]}).to_string(),
+            ));
+        }
+        if line.starts_with("GET /api/0/issues/ISSUE-1/hashes/") {
+            return Some((
+                "200 OK",
+                serde_json::json!({"hashes": ["hash-1"]}).to_string(),
+            ));
+        }
+        issue_org_response(line, body)
+    }
+
+    fn issue_org_response(line: &str, body: &str) -> Option<(&'static str, String)> {
+        if line.starts_with("GET /api/0/organizations/test-org/projects/") {
+            return Some((
+                "200 OK",
+                serde_json::json!({"projects": [{"slug": "web"}]}).to_string(),
+            ));
+        }
+        issue_mutation_response(line, body)
+    }
+
+    fn issue_mutation_response(line: &str, body: &str) -> Option<(&'static str, String)> {
+        if line.starts_with("GET /api/0/projects/test-org/web/issues/") {
+            return Some(("200 OK", list_issues_response(line)));
+        }
+        if line.starts_with("PUT /api/0/issues/1001/") {
+            return Some(("200 OK", status_response(body)));
+        }
+        None
+    }
+
+    fn monitor_response(line: &str) -> Option<(&'static str, String)> {
+        if line.starts_with("GET /api/0/organizations/test-org/monitors/?") {
+            return Some((
+                "200 OK",
+                serde_json::json!({"kind": "monitors"}).to_string(),
+            ));
+        }
+        if line.starts_with("GET /api/0/organizations/test-org/monitors/daily/checkins/") {
+            return Some(("200 OK", serde_json::json!({"limit": 3}).to_string()));
+        }
+        if line.starts_with("GET /api/0/organizations/test-org/monitors/daily/") {
+            return Some(("200 OK", serde_json::json!({"slug": "daily"}).to_string()));
+        }
+        if line.starts_with("DELETE /api/0/organizations/test-org/monitors/daily/") {
+            return Some(("204 No Content", String::new()));
+        }
+        None
+    }
+
+    fn org_resource_response(line: &str) -> Option<(&'static str, String)> {
+        if line.starts_with("GET /api/0/organizations/test-org/sentry-apps/?status=internal") {
+            return Some((
+                "200 OK",
+                serde_json::json!({"items": [{"slug": "app"}]}).to_string(),
+            ));
+        }
+        if line.starts_with("GET /api/0/sentry-apps/app/") {
+            return Some(("200 OK", serde_json::json!({"slug": "app"}).to_string()));
+        }
+        if line.starts_with("GET /api/0/organizations/test-org/releases/?") {
+            return Some(("200 OK", release_list_response(line)));
+        }
+        if line.starts_with("GET /api/0/organizations/test-org/releases/v1.0%2Bbuild/") {
+            return Some((
+                "200 OK",
+                serde_json::json!({"version": "v1.0+build"}).to_string(),
+            ));
+        }
+        if line.starts_with("GET /api/0/organizations/test-org/events-trace/trace-1/") {
+            return Some((
+                "200 OK",
+                serde_json::json!({"trace": "trace-1"}).to_string(),
+            ));
+        }
+        if line.starts_with("GET /api/0/organizations/test-org/events/web:event-1/") {
+            return Some((
+                "200 OK",
+                serde_json::json!({"eventID": "event-1"}).to_string(),
+            ));
+        }
+        None
+    }
+
+    fn list_issues_response(line: &str) -> String {
+        let query = if line.contains("assigned%3Ame") {
+            "assigned:me"
+        } else {
+            "is:unresolved"
+        };
+        serde_json::json!({"query": query}).to_string()
+    }
+
+    fn release_list_response(line: &str) -> String {
+        let project = if line.contains("project=web") {
+            "web"
+        } else {
+            ""
+        };
+        serde_json::json!({"project": project}).to_string()
+    }
+
+    fn status_response(body: &str) -> String {
+        let parsed: Value = serde_json::from_str(body).unwrap();
+        serde_json::json!({
+            "shortId": "ISSUE-1",
+            "status": parsed["status"],
+            "statusDetails": parsed["statusDetails"]
+        })
+        .to_string()
+    }
+
+    struct MockSentry {
+        addr: SocketAddr,
+        requests: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl MockSentry {
+        fn start(handler: fn(&str, &str) -> (&'static str, String)) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let thread_requests = Arc::clone(&requests);
+            thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    handle_connection(stream, &thread_requests, handler);
+                }
+            });
+            Self { addr, requests }
+        }
+
+        fn base_url(&self) -> String {
+            format!("http://{}/api/0", self.addr)
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    fn handle_connection(
+        mut stream: std::net::TcpStream,
+        requests: &Arc<Mutex<Vec<String>>>,
+        handler: fn(&str, &str) -> (&'static str, String),
+    ) {
+        let mut buffer = [0_u8; 16384];
+        let bytes = stream.read(&mut buffer).unwrap();
+        let request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+        let request_line = request.lines().next().unwrap_or_default().to_string();
+        requests.lock().unwrap().push(request.to_lowercase());
+        let body = request.split("\r\n\r\n").nth(1).unwrap_or_default();
+        let (status, response_body) = handler(&request_line, body);
+        let response = format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
     }
 }

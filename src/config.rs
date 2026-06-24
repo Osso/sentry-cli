@@ -157,3 +157,155 @@ pub fn save_config(config: &Config) -> Result<()> {
     fs::write(&path, serde_json::to_string_pretty(config)?)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct HomeGuard {
+        xdg_previous: Option<String>,
+        home_previous: Option<String>,
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            restore_env("XDG_CONFIG_HOME", &self.xdg_previous);
+            restore_env("HOME", &self.home_previous);
+        }
+    }
+
+    fn restore_env(name: &str, previous: &Option<String>) {
+        unsafe {
+            if let Some(value) = previous {
+                std::env::set_var(name, value);
+            } else {
+                std::env::remove_var(name);
+            }
+        }
+    }
+
+    fn with_home(test: impl FnOnce(&std::path::Path)) {
+        let _lock = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let path = std::env::temp_dir().join(format!(
+            "sentry-config-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let guard = HomeGuard {
+            xdg_previous: std::env::var("XDG_CONFIG_HOME").ok(),
+            home_previous: std::env::var("HOME").ok(),
+        };
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &path);
+            std::env::set_var("HOME", &path);
+        }
+
+        test(&path);
+
+        drop(guard);
+        std::fs::remove_dir_all(path).ok();
+    }
+
+    #[test]
+    fn site_config_prefers_explicit_then_default_then_legacy() {
+        let mut config = Config {
+            default_site: Some("gc".to_string()),
+            organization: Some("legacy-org".to_string()),
+            auth_token: Some("legacy-token".to_string()),
+            ..Default::default()
+        };
+        config.set_site(
+            "gc",
+            Some("gc-org".to_string()),
+            Some("gc-token".to_string()),
+        );
+        config.set_site("mh", Some("mh-org".to_string()), None);
+
+        assert_eq!(
+            config.get_site(Some("mh")).organization.as_deref(),
+            Some("mh-org")
+        );
+        assert_eq!(
+            config.get_site(None).auth_token.as_deref(),
+            Some("gc-token")
+        );
+        assert_eq!(
+            Config {
+                organization: Some("legacy-org".to_string()),
+                auth_token: Some("legacy-token".to_string()),
+                ..Default::default()
+            }
+            .get_site(Some("missing"))
+            .organization
+            .as_deref(),
+            Some("legacy-org")
+        );
+        let mut sites = config.list_sites();
+        sites.sort_unstable();
+        assert_eq!(sites, vec!["gc", "mh"]);
+    }
+
+    #[test]
+    fn parses_sentryclirc_auth_and_defaults_sections() {
+        let parsed = parse_sentryclirc(
+            r#"
+                [auth]
+                token = abc123
+                [defaults]
+                org = globalcomix
+                [other]
+                token = ignored
+            "#,
+        );
+
+        assert_eq!(parsed.auth_token.as_deref(), Some("abc123"));
+        assert_eq!(parsed.organization.as_deref(), Some("globalcomix"));
+        assert_eq!(
+            parse_ini_value("token = abc", "token"),
+            Some("abc".to_string())
+        );
+        assert_eq!(parse_ini_value("org = abc", "token"), None);
+        assert!(is_section_header("[auth]"));
+        assert!(!is_section_header("token = abc"));
+    }
+
+    #[test]
+    fn load_prefers_json_config_then_sentryclirc_then_default() {
+        with_home(|root| {
+            let default_config = load_config().unwrap();
+            assert!(default_config.auth_token.is_none());
+
+            std::fs::write(
+                root.join(".sentryclirc"),
+                "[auth]\ntoken = from-rc\n[defaults]\norg = rc-org\n",
+            )
+            .unwrap();
+            let rc_config = load_config().unwrap();
+            assert_eq!(rc_config.auth_token.as_deref(), Some("from-rc"));
+            assert_eq!(rc_config.organization.as_deref(), Some("rc-org"));
+
+            let json_config = Config {
+                organization: Some("json-org".to_string()),
+                auth_token: Some("json-token".to_string()),
+                ..Default::default()
+            };
+            save_config(&json_config).unwrap();
+            let loaded_json = load_config().unwrap();
+            assert_eq!(loaded_json.organization.as_deref(), Some("json-org"));
+            assert!(
+                load_from_sentryclirc(&root.join("missing"))
+                    .unwrap()
+                    .is_none()
+            );
+        });
+    }
+}
