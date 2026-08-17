@@ -6,10 +6,9 @@ mod trace;
 use std::collections::HashMap;
 
 use anyhow::{Result, bail};
-#[cfg(not(test))]
+use chrono::{DateTime, FixedOffset};
 use clap::{Parser, Subcommand};
 
-#[cfg(not(test))]
 #[derive(Parser)]
 #[command(name = "sentry")]
 #[command(about = "CLI tool to access Sentry API")]
@@ -22,7 +21,6 @@ struct Cli {
     command: Commands,
 }
 
-#[cfg(not(test))]
 #[derive(Subcommand)]
 enum Commands {
     /// Configure organization and auth token
@@ -70,11 +68,22 @@ enum Commands {
         #[command(subcommand)]
         command: Option<MonitorCommands>,
     },
-    /// [Redirect] Get events for an issue
-    #[command(hide = true)]
+    /// Search error events across a project
     Events {
-        /// Issue ID
-        id: Option<String>,
+        /// Project slug
+        project: String,
+        /// Explore search query
+        #[arg(short, long)]
+        query: Option<String>,
+        /// Range start as an RFC3339 UTC timestamp
+        #[arg(long)]
+        start: String,
+        /// Range end as an RFC3339 UTC timestamp
+        #[arg(long)]
+        end: String,
+        /// Maximum events to return
+        #[arg(short, long, default_value_t = 100)]
+        limit: u32,
     },
     /// List internal integrations
     Integrations,
@@ -124,7 +133,6 @@ enum Commands {
     },
 }
 
-#[cfg(not(test))]
 #[derive(Subcommand)]
 enum IssueCommands {
     /// Get the latest event for this issue
@@ -154,7 +162,6 @@ enum IssueCommands {
     },
 }
 
-#[cfg(not(test))]
 #[derive(Subcommand)]
 enum MonitorCommands {
     /// List recent check-ins for this monitor
@@ -191,6 +198,27 @@ fn parse_duration_to_minutes(s: &str) -> Result<u64> {
             suffix
         ),
     }
+}
+
+fn validate_event_search(start: &str, end: &str, limit: u32) -> Result<()> {
+    if !(1..=100).contains(&limit) {
+        bail!("Limit must be between 1 and 100");
+    }
+
+    let start = parse_utc_timestamp("start", start)?;
+    let end = parse_utc_timestamp("end", end)?;
+    if start >= end {
+        bail!("Start timestamp must be before end timestamp");
+    }
+    Ok(())
+}
+
+fn parse_utc_timestamp(label: &str, value: &str) -> Result<DateTime<FixedOffset>> {
+    if !value.ends_with('Z') && !value.ends_with("+00:00") {
+        bail!("{label} must use the UTC offset Z or +00:00");
+    }
+    DateTime::parse_from_rfc3339(value)
+        .map_err(|error| anyhow::anyhow!("Invalid {label} RFC3339 timestamp: {error}"))
 }
 
 #[cfg(not(test))]
@@ -468,6 +496,23 @@ async fn handle_event_command(client: &api::Client, project: &str, event_id: &st
 }
 
 #[cfg(not(test))]
+async fn handle_events_command(
+    client: &api::Client,
+    project: &str,
+    query: Option<&str>,
+    start: &str,
+    end: &str,
+    limit: u32,
+) -> Result<()> {
+    validate_event_search(start, end, limit)?;
+    print_json(
+        &client
+            .list_events(project, query, start, end, limit)
+            .await?,
+    )
+}
+
+#[cfg(not(test))]
 fn handle_config_command(
     site: Option<&str>,
     org: Option<String>,
@@ -491,6 +536,13 @@ async fn dispatch_client_core(client: &api::Client, command: Commands) -> Result
         Commands::Issues { project, query } => {
             print_json(&client.list_issues(&project, query.as_deref()).await?)?
         }
+        Commands::Events {
+            project,
+            query,
+            start,
+            end,
+            limit,
+        } => handle_events_command(client, &project, query.as_deref(), &start, &end, limit).await?,
         Commands::Monitors { environment } => {
             print_json(&client.list_monitors(environment.as_deref()).await?)?
         }
@@ -562,7 +614,6 @@ async fn dispatch(cli: Cli) -> Result<()> {
             default,
             list,
         } => handle_config_command(site, org, token, default, list)?,
-        Commands::Events { id } => print_events_redirect(id),
         command => {
             let client = get_client(site)?;
             dispatch_client_core(&client, command).await?;
@@ -595,18 +646,6 @@ async fn handle_monitor_command(
 }
 
 #[cfg(not(test))]
-fn print_events_redirect(id: Option<String>) -> ! {
-    eprintln!("Error: 'events' is a subcommand of 'issue', not a top-level command.");
-    eprintln!();
-    if let Some(issue_id) = id {
-        eprintln!("Usage: sentry issue {} events", issue_id);
-    } else {
-        eprintln!("Usage: sentry issue <ISSUE_ID> events");
-    }
-    std::process::exit(1);
-}
-
-#[cfg(not(test))]
 #[tokio::main]
 async fn main() -> Result<()> {
     dispatch(Cli::parse()).await
@@ -615,6 +654,7 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn test_parse_days() {
@@ -641,6 +681,69 @@ mod tests {
         assert!(parse_duration_to_minutes("abc").is_err());
         assert!(parse_duration_to_minutes("30x").is_err());
         assert!(parse_duration_to_minutes("d").is_err());
+    }
+
+    #[test]
+    fn events_command_accepts_valid_utc_range_and_defaults_limit() {
+        let cli = Cli::try_parse_from([
+            "sentry",
+            "events",
+            "flutter",
+            "--query",
+            "user.id:762159",
+            "--start",
+            "2026-08-12T16:27:00Z",
+            "--end",
+            "2026-08-12T16:29:00+00:00",
+        ])
+        .unwrap();
+
+        let Commands::Events {
+            project,
+            query,
+            start,
+            end,
+            limit,
+        } = cli.command
+        else {
+            panic!("events command should parse");
+        };
+
+        assert_eq!(project, "flutter");
+        assert_eq!(query.as_deref(), Some("user.id:762159"));
+        assert_eq!(limit, 100);
+        validate_event_search(&start, &end, limit).unwrap();
+    }
+
+    #[test]
+    fn events_command_rejects_malformed_and_non_utc_ranges() {
+        assert!(validate_event_search("not-a-timestamp", "2026-08-12T16:29:00Z", 100,).is_err());
+        assert!(
+            validate_event_search("2026-08-12T16:27:00-04:00", "2026-08-12T16:29:00Z", 100,)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn events_command_rejects_start_at_or_after_end() {
+        assert!(
+            validate_event_search("2026-08-12T16:29:00Z", "2026-08-12T16:29:00Z", 100,).is_err()
+        );
+        assert!(
+            validate_event_search("2026-08-12T16:30:00Z", "2026-08-12T16:29:00Z", 100,).is_err()
+        );
+    }
+
+    #[test]
+    fn events_command_enforces_limit_boundaries() {
+        assert!(validate_event_search("2026-08-12T16:27:00Z", "2026-08-12T16:29:00Z", 1,).is_ok());
+        assert!(
+            validate_event_search("2026-08-12T16:27:00Z", "2026-08-12T16:29:00Z", 100,).is_ok()
+        );
+        assert!(validate_event_search("2026-08-12T16:27:00Z", "2026-08-12T16:29:00Z", 0,).is_err());
+        assert!(
+            validate_event_search("2026-08-12T16:27:00Z", "2026-08-12T16:29:00Z", 101,).is_err()
+        );
     }
 
     #[test]

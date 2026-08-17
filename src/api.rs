@@ -4,6 +4,35 @@ use std::time::Duration;
 
 const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_SECS: u64 = 1;
+const EVENT_SEARCH_FIELDS: [&str; 6] = ["id", "timestamp", "title", "issue", "user.id", "message"];
+
+fn event_search_endpoint(
+    organization: &str,
+    project: &str,
+    query: Option<&str>,
+    start: &str,
+    end: &str,
+    limit: u32,
+) -> String {
+    let mut endpoint = format!(
+        "/organizations/{organization}/events/?dataset=errors&project={}",
+        urlencoding::encode(project)
+    );
+    if let Some(query) = query {
+        endpoint.push_str("&query=");
+        endpoint.push_str(&urlencoding::encode(query));
+    }
+    endpoint.push_str(&format!(
+        "&start={}&end={}&per_page={limit}&sort=-timestamp",
+        urlencoding::encode(start),
+        urlencoding::encode(end)
+    ));
+    for field in EVENT_SEARCH_FIELDS {
+        endpoint.push_str("&field=");
+        endpoint.push_str(field);
+    }
+    endpoint
+}
 
 pub struct Client {
     http: reqwest::Client,
@@ -172,6 +201,26 @@ impl Client {
             self.organization,
             project_slug,
             urlencoding::encode(query_param)
+        ))
+        .await
+    }
+
+    /// Search project error events through Sentry Explore.
+    pub async fn list_events(
+        &self,
+        project_slug: &str,
+        query: Option<&str>,
+        start: &str,
+        end: &str,
+        limit: u32,
+    ) -> Result<Value> {
+        self.get(&event_search_endpoint(
+            &self.organization,
+            project_slug,
+            query,
+            start,
+            end,
+            limit,
         ))
         .await
     }
@@ -437,6 +486,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn client_searches_error_events_with_encoded_parameters_fields_and_auth() {
+        let server = MockSentry::start(handler);
+        let client = Client::for_test(server.base_url());
+
+        let events = client
+            .list_events(
+                "flutter app",
+                Some("user.id:762159 error.value:\"bad value\""),
+                "2026-08-12T16:27:00Z",
+                "2026-08-12T16:29:00+00:00",
+                100,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            events,
+            serde_json::json!({
+                "data": [{
+                    "id": "event-1",
+                    "timestamp": "2026-08-12T16:28:22Z",
+                    "title": "Purchase completion failed",
+                    "issue": "FLUTTER-1",
+                    "user.id": "762159",
+                    "message": "boom"
+                }],
+                "meta": {"dataset": "errors"}
+            })
+        );
+
+        let request = server
+            .requests()
+            .into_iter()
+            .find(|request| request.starts_with("get /api/0/organizations/test-org/events/?"))
+            .expect("event search request should be sent");
+        for parameter in [
+            "dataset=errors",
+            "project=flutter%20app",
+            "query=user.id%3a762159%20error.value%3a%22bad%20value%22",
+            "start=2026-08-12t16%3a27%3a00z",
+            "end=2026-08-12t16%3a29%3a00%2b00%3a00",
+            "per_page=100",
+            "sort=-timestamp",
+            "field=id",
+            "field=timestamp",
+            "field=title",
+            "field=issue",
+            "field=user.id",
+            "field=message",
+        ] {
+            assert!(
+                request.contains(parameter),
+                "missing parameter: {parameter}"
+            );
+        }
+        assert!(request.contains("authorization: bearer test-token"));
+    }
+
+    #[tokio::test]
+    async fn client_preserves_empty_event_search_result() {
+        let server = MockSentry::start(handler);
+        let client = Client::for_test(server.base_url());
+
+        let events = client
+            .list_events(
+                "flutter",
+                Some("empty:true"),
+                "2026-08-12T00:00:00Z",
+                "2026-08-13T00:00:00Z",
+                25,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            events,
+            serde_json::json!({"data": [], "meta": {"dataset": "errors"}})
+        );
+    }
+
+    #[tokio::test]
+    async fn client_reports_event_search_api_failure_with_status_and_body() {
+        let server = MockSentry::start(handler);
+        let client = Client::for_test(server.base_url());
+
+        let error = client
+            .list_events(
+                "flutter",
+                Some("fail:true"),
+                "2026-08-12T00:00:00Z",
+                "2026-08-13T00:00:00Z",
+                10,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("HTTP 400 Bad Request - invalid explore query")
+        );
+    }
+
+    #[tokio::test]
     async fn client_updates_issue_statuses_and_snoozes_short_ids() {
         let server = MockSentry::start(handler);
         let client = Client::for_test(server.base_url());
@@ -535,6 +688,9 @@ mod tests {
         if let Some(response) = monitor_response(line) {
             return response;
         }
+        if let Some(response) = event_search_response(line) {
+            return response;
+        }
         if let Some(response) = org_resource_response(line) {
             return response;
         }
@@ -619,6 +775,36 @@ mod tests {
             return Some(("204 No Content", String::new()));
         }
         None
+    }
+
+    fn event_search_response(line: &str) -> Option<(&'static str, String)> {
+        if !line.starts_with("GET /api/0/organizations/test-org/events/?") {
+            return None;
+        }
+        if line.contains("query=fail%3Atrue") {
+            return Some(("400 Bad Request", "invalid explore query".to_string()));
+        }
+        if line.contains("query=empty%3Atrue") {
+            return Some((
+                "200 OK",
+                serde_json::json!({"data": [], "meta": {"dataset": "errors"}}).to_string(),
+            ));
+        }
+        Some((
+            "200 OK",
+            serde_json::json!({
+                "data": [{
+                    "id": "event-1",
+                    "timestamp": "2026-08-12T16:28:22Z",
+                    "title": "Purchase completion failed",
+                    "issue": "FLUTTER-1",
+                    "user.id": "762159",
+                    "message": "boom"
+                }],
+                "meta": {"dataset": "errors"}
+            })
+            .to_string(),
+        ))
     }
 
     fn org_resource_response(line: &str) -> Option<(&'static str, String)> {
