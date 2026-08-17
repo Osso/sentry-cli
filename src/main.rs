@@ -496,7 +496,7 @@ async fn handle_event_command(client: &api::Client, project: &str, event_id: &st
 }
 
 #[cfg(not(test))]
-async fn handle_events_command(
+async fn search_project_events(
     client: &api::Client,
     project: &str,
     query: Option<&str>,
@@ -507,7 +507,7 @@ async fn handle_events_command(
     validate_event_search(start, end, limit)?;
     print_json(
         &client
-            .list_events(project, query, start, end, limit)
+            .search_events(project, query, start, end, limit)
             .await?,
     )
 }
@@ -542,7 +542,7 @@ async fn dispatch_client_core(client: &api::Client, command: Commands) -> Result
             start,
             end,
             limit,
-        } => handle_events_command(client, &project, query.as_deref(), &start, &end, limit).await?,
+        } => search_project_events(client, &project, query.as_deref(), &start, &end, limit).await?,
         Commands::Monitors { environment } => {
             print_json(&client.list_monitors(environment.as_deref()).await?)?
         }

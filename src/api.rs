@@ -206,7 +206,7 @@ impl Client {
     }
 
     /// Search project error events through Sentry Explore.
-    pub async fn list_events(
+    pub async fn search_events(
         &self,
         project_slug: &str,
         query: Option<&str>,
@@ -491,7 +491,7 @@ mod tests {
         let client = Client::for_test(server.base_url());
 
         let events = client
-            .list_events(
+            .search_events(
                 "flutter app",
                 Some("user.id:762159 error.value:\"bad value\""),
                 "2026-08-12T16:27:00Z",
@@ -550,7 +550,7 @@ mod tests {
         let client = Client::for_test(server.base_url());
 
         let events = client
-            .list_events(
+            .search_events(
                 "flutter",
                 Some("empty:true"),
                 "2026-08-12T00:00:00Z",
@@ -572,7 +572,7 @@ mod tests {
         let client = Client::for_test(server.base_url());
 
         let error = client
-            .list_events(
+            .search_events(
                 "flutter",
                 Some("fail:true"),
                 "2026-08-12T00:00:00Z",
