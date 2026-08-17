@@ -22,9 +22,45 @@ sentry config
 
 ```bash
 sentry projects         # List projects
-sentry issues           # List issues for a project
+sentry issues <project> # List issue aggregates for a project
 sentry issue <id>       # Get issue details
 ```
+
+### Project event search
+
+Search project error events through Sentry Explore:
+
+```text
+sentry events <project> [--query <QUERY>] --start <RFC3339-UTC> --end <RFC3339-UTC> [--limit <1..=100>]
+```
+
+`--start` and `--end` are required UTC timestamps using `Z` or `+00:00`; `--start` must precede `--end`. `--limit` defaults to `100` and accepts `1` through `100`.
+
+The command prints Explore's structured JSON response:
+
+```json
+{
+  "data": [
+    {
+      "id": "…",
+      "timestamp": "…",
+      "title": "…",
+      "issue": "…",
+      "user.id": "…",
+      "message": "…"
+    }
+  ],
+  "meta": { "dataset": "errors" }
+}
+```
+
+Example:
+
+```bash
+sentry events flutter --query 'user.id:762159' --start 2026-08-12T16:27:00Z --end 2026-08-12T16:29:00Z
+```
+
+`issue <id> events` remains the issue-scoped event listing; top-level `events <project>` searches project events by time range and query.
 
 ## License
 
