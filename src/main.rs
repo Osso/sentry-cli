@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod performance;
 mod trace;
 
 #[cfg(not(test))]
