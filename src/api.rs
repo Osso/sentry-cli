@@ -1,3 +1,8 @@
+mod performance;
+
+#[cfg(not(test))]
+pub use performance::TransactionRankingRequest;
+
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::time::Duration;
@@ -401,7 +406,7 @@ fn monitor_checkins_endpoint(org: &str, slug: &str, limit: u32) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpListener};
@@ -681,7 +686,7 @@ mod tests {
         );
     }
 
-    fn handler(line: &str, body: &str) -> (&'static str, String) {
+    pub(super) fn handler(line: &str, body: &str) -> (&'static str, String) {
         if let Some(response) = issue_response(line, body) {
             return response;
         }
@@ -781,6 +786,9 @@ mod tests {
         if !line.starts_with("GET /api/0/organizations/test-org/events/?") {
             return None;
         }
+        if line.contains("dataset=spans") {
+            return Some(super::performance::test_response(line));
+        }
         if line.contains("query=fail%3Atrue") {
             return Some(("400 Bad Request", "invalid explore query".to_string()));
         }
@@ -869,13 +877,13 @@ mod tests {
         .to_string()
     }
 
-    struct MockSentry {
+    pub(super) struct MockSentry {
         addr: SocketAddr,
         requests: Arc<Mutex<Vec<String>>>,
     }
 
     impl MockSentry {
-        fn start(handler: fn(&str, &str) -> (&'static str, String)) -> Self {
+        pub(super) fn start(handler: fn(&str, &str) -> (&'static str, String)) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
             let requests = Arc::new(Mutex::new(Vec::new()));
@@ -888,11 +896,11 @@ mod tests {
             Self { addr, requests }
         }
 
-        fn base_url(&self) -> String {
+        pub(super) fn base_url(&self) -> String {
             format!("http://{}/api/0", self.addr)
         }
 
-        fn requests(&self) -> Vec<String> {
+        pub(super) fn requests(&self) -> Vec<String> {
             self.requests.lock().unwrap().clone()
         }
     }

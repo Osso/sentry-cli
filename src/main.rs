@@ -1,6 +1,7 @@
 mod api;
 mod config;
 mod performance;
+mod performance_command;
 mod trace;
 
 #[cfg(not(test))]
@@ -86,6 +87,8 @@ enum Commands {
         #[arg(short, long, default_value_t = 100)]
         limit: u32,
     },
+    /// Rank slow project transactions through Sentry Explore
+    Performance(performance_command::PerformanceCommand),
     /// List internal integrations
     Integrations,
     /// Get integration details
@@ -190,15 +193,18 @@ fn parse_duration_to_minutes(s: &str) -> Result<u64> {
         )
     })?;
 
-    match suffix {
-        "d" => Ok(value * 24 * 60),
-        "h" => Ok(value * 60),
-        "m" => Ok(value),
+    let minutes_per_unit = match suffix {
+        "d" => 24 * 60,
+        "h" => 60,
+        "m" => 1,
         _ => bail!(
             "Unknown duration suffix '{}'. Use d (days), h (hours), or m (minutes)",
             suffix
         ),
-    }
+    };
+    value
+        .checked_mul(minutes_per_unit)
+        .ok_or_else(|| anyhow::anyhow!("Duration '{}' is too large", s))
 }
 
 fn validate_event_search(start: &str, end: &str, limit: u32) -> Result<()> {
@@ -544,6 +550,9 @@ async fn dispatch_client_core(client: &api::Client, command: Commands) -> Result
             end,
             limit,
         } => search_project_events(client, &project, query.as_deref(), &start, &end, limit).await?,
+        Commands::Performance(command) => {
+            performance_command::query_and_print(client, command).await?
+        }
         Commands::Monitors { environment } => {
             print_json(&client.list_monitors(environment.as_deref()).await?)?
         }
@@ -572,7 +581,8 @@ async fn dispatch_client_extended(client: &api::Client, command: Commands) -> Re
         | Commands::Monitors { .. }
         | Commands::Monitor { .. }
         | Commands::Config { .. }
-        | Commands::Events { .. } => unreachable!(),
+        | Commands::Events { .. }
+        | Commands::Performance(_) => unreachable!(),
     }
     Ok(())
 }
@@ -682,6 +692,11 @@ mod tests {
         assert!(parse_duration_to_minutes("abc").is_err());
         assert!(parse_duration_to_minutes("30x").is_err());
         assert!(parse_duration_to_minutes("d").is_err());
+    }
+
+    #[test]
+    fn duration_parser_rejects_overflow() {
+        assert!(parse_duration_to_minutes("18446744073709551615d").is_err());
     }
 
     #[test]

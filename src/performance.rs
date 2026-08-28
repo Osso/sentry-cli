@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 use clap::ValueEnum;
 use serde::Serialize;
 use serde_json::Value;
+use std::fmt::{self, Display};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -10,6 +11,12 @@ pub enum PerformanceMetric {
     P75,
     P95,
     P99,
+}
+
+impl Display for PerformanceMetric {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.name())
+    }
 }
 
 impl PerformanceMetric {
@@ -233,7 +240,7 @@ mod tests {
 
         for (metric, name, aggregate_field, sort_key, table_label) in cases {
             assert_eq!(PerformanceMetric::from_str(name, true), Ok(metric));
-            assert_eq!(metric.name(), name);
+            assert_eq!(metric.to_string(), name);
             assert_eq!(metric.aggregate_field(), aggregate_field);
             assert_eq!(metric.sort_key(), sort_key);
             assert_eq!(metric.table_label(), table_label);
