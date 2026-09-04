@@ -10,6 +10,16 @@ use std::time::Duration;
 const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_SECS: u64 = 1;
 const EVENT_SEARCH_FIELDS: [&str; 6] = ["id", "timestamp", "title", "issue", "user.id", "message"];
+const SPAN_SEARCH_FIELDS: [&str; 8] = [
+    "timestamp",
+    "transaction",
+    "trace",
+    "id",
+    "span_id",
+    "span.op",
+    "span.description",
+    "span.duration",
+];
 
 fn event_search_endpoint(
     organization: &str,
@@ -35,6 +45,45 @@ fn event_search_endpoint(
     for field in EVENT_SEARCH_FIELDS {
         endpoint.push_str("&field=");
         endpoint.push_str(field);
+    }
+    endpoint
+}
+
+fn span_search_endpoint(
+    organization: &str,
+    project: &str,
+    query: Option<&str>,
+    start: &str,
+    end: &str,
+    limit: u32,
+    fields: Option<&[String]>,
+    sort: &str,
+) -> String {
+    let mut endpoint = format!(
+        "/organizations/{organization}/events/?dataset=spans&project={}",
+        urlencoding::encode(project)
+    );
+    if let Some(query) = query {
+        endpoint.push_str("&query=");
+        endpoint.push_str(&urlencoding::encode(query));
+    }
+    endpoint.push_str(&format!(
+        "&start={}&end={}&per_page={limit}&sort={}",
+        urlencoding::encode(start),
+        urlencoding::encode(end),
+        urlencoding::encode(sort),
+    ));
+
+    if let Some(fields) = fields.filter(|fields| !fields.is_empty()) {
+        for field in fields {
+            endpoint.push_str("&field=");
+            endpoint.push_str(&urlencoding::encode(field));
+        }
+    } else {
+        for field in SPAN_SEARCH_FIELDS {
+            endpoint.push_str("&field=");
+            endpoint.push_str(field);
+        }
     }
     endpoint
 }
@@ -226,6 +275,30 @@ impl Client {
             start,
             end,
             limit,
+        ))
+        .await
+    }
+
+    /// Search individual transaction and span rows through Sentry Explore.
+    pub async fn search_spans(
+        &self,
+        project_slug: &str,
+        query: Option<&str>,
+        start: &str,
+        end: &str,
+        limit: u32,
+        fields: Option<&[String]>,
+        sort: &str,
+    ) -> Result<Value> {
+        self.get(&span_search_endpoint(
+            &self.organization,
+            project_slug,
+            query,
+            start,
+            end,
+            limit,
+            fields,
+            sort,
         ))
         .await
     }
@@ -595,6 +668,156 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
+    async fn client_searches_span_rows_with_default_fields_and_auth() {
+        let server = MockSentry::start(handler);
+        let client = Client::for_test(server.base_url());
+
+        let spans = client
+            .search_spans(
+                "web app",
+                Some("transaction:api/v1/account/username"),
+                "2026-09-04T08:14:30Z",
+                "2026-09-04T09:14:30+00:00",
+                2,
+                None,
+                "-timestamp",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            spans,
+            serde_json::json!({
+                "data": [
+                    {
+                        "timestamp": "2026-09-04T08:30:00Z",
+                        "transaction": "api/v1/account/username",
+                        "trace": "trace-1",
+                        "id": "event-1",
+                        "span_id": "span-1",
+                        "span.op": "db",
+                        "span.description": "UPDATE users",
+                        "span.duration": 12.5
+                    },
+                    {
+                        "timestamp": "2026-09-04T08:29:00Z",
+                        "transaction": "api/v1/account/username",
+                        "trace": "trace-2",
+                        "id": "event-2",
+                        "span_id": "span-2",
+                        "span.op": "http.client",
+                        "span.description": "GET /account/me",
+                        "span.duration": 25.0
+                    }
+                ],
+                "meta": {"dataset": "spans"}
+            })
+        );
+
+        let request = server
+            .requests()
+            .into_iter()
+            .find(|request| request.starts_with("get /api/0/organizations/test-org/events/?"))
+            .expect("span search request should be sent");
+        for parameter in [
+            "dataset=spans",
+            "project=web%20app",
+            "query=transaction%3aapi%2fv1%2faccount%2fusername",
+            "start=2026-09-04t08%3a14%3a30z",
+            "end=2026-09-04t09%3a14%3a30%2b00%3a00",
+            "per_page=2",
+            "sort=-timestamp",
+            "field=timestamp",
+            "field=transaction",
+            "field=trace",
+            "field=id",
+            "field=span_id",
+            "field=span.op",
+            "field=span.description",
+            "field=span.duration",
+        ] {
+            assert!(
+                request.contains(parameter),
+                "missing parameter: {parameter}"
+            );
+        }
+        assert!(request.contains("authorization: bearer test-token"));
+    }
+
+    #[tokio::test]
+    async fn client_searches_span_rows_with_field_override_sort_and_preserves_empty_results() {
+        let server = MockSentry::start(handler);
+        let client = Client::for_test(server.base_url());
+        let fields = [
+            "timestamp".to_string(),
+            "trace".to_string(),
+            "transaction.id".to_string(),
+        ];
+
+        let spans = client
+            .search_spans(
+                "web",
+                Some("empty:true"),
+                "2026-09-04T08:14:30Z",
+                "2026-09-04T09:14:30Z",
+                25,
+                Some(&fields),
+                "span.duration",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            spans,
+            serde_json::json!({"data": [], "meta": {"dataset": "spans"}})
+        );
+
+        let request = server
+            .requests()
+            .into_iter()
+            .find(|request| request.starts_with("get /api/0/organizations/test-org/events/?"))
+            .expect("span search request should be sent");
+        for parameter in [
+            "field=timestamp",
+            "field=trace",
+            "field=transaction.id",
+            "sort=span.duration",
+            "per_page=25",
+        ] {
+            assert!(
+                request.contains(parameter),
+                "missing parameter: {parameter}"
+            );
+        }
+        assert!(!request.contains("field=span.op"));
+    }
+
+    #[tokio::test]
+    async fn client_reports_span_search_api_failure_with_status_and_body() {
+        let server = MockSentry::start(handler);
+        let client = Client::for_test(server.base_url());
+
+        let error = client
+            .search_spans(
+                "web",
+                Some("fail:spans"),
+                "2026-09-04T08:14:30Z",
+                "2026-09-04T09:14:30Z",
+                10,
+                None,
+                "-timestamp",
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("HTTP 400 Bad Request - invalid span query")
+        );
+    }
+
+    #[tokio::test]
     async fn client_updates_issue_statuses_and_snoozes_short_ids() {
         let server = MockSentry::start(handler);
         let client = Client::for_test(server.base_url());
@@ -786,6 +1009,9 @@ pub(super) mod tests {
         if !line.starts_with("GET /api/0/organizations/test-org/events/?") {
             return None;
         }
+        if line.contains("dataset=spans") && !line.contains("field=count%28%29") {
+            return span_search_response(line);
+        }
         if line.contains("dataset=spans") {
             return Some(super::performance::test_response(line));
         }
@@ -810,6 +1036,47 @@ pub(super) mod tests {
                     "message": "boom"
                 }],
                 "meta": {"dataset": "errors"}
+            })
+            .to_string(),
+        ))
+    }
+
+    fn span_search_response(line: &str) -> Option<(&'static str, String)> {
+        if line.contains("query=fail%3Aspans") {
+            return Some(("400 Bad Request", "invalid span query".to_string()));
+        }
+        if line.contains("query=empty%3Atrue") {
+            return Some((
+                "200 OK",
+                serde_json::json!({"data": [], "meta": {"dataset": "spans"}}).to_string(),
+            ));
+        }
+        Some((
+            "200 OK",
+            serde_json::json!({
+                "data": [
+                    {
+                        "timestamp": "2026-09-04T08:30:00Z",
+                        "transaction": "api/v1/account/username",
+                        "trace": "trace-1",
+                        "id": "event-1",
+                        "span_id": "span-1",
+                        "span.op": "db",
+                        "span.description": "UPDATE users",
+                        "span.duration": 12.5
+                    },
+                    {
+                        "timestamp": "2026-09-04T08:29:00Z",
+                        "transaction": "api/v1/account/username",
+                        "trace": "trace-2",
+                        "id": "event-2",
+                        "span_id": "span-2",
+                        "span.op": "http.client",
+                        "span.description": "GET /account/me",
+                        "span.duration": 25.0
+                    }
+                ],
+                "meta": {"dataset": "spans"}
             })
             .to_string(),
         ))

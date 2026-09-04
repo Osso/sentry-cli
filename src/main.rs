@@ -89,6 +89,29 @@ enum Commands {
     },
     /// Rank slow project transactions through Sentry Explore
     Performance(performance_command::PerformanceCommand),
+    /// Search individual transaction and span rows through Sentry Explore
+    Spans {
+        /// Project slug
+        project: String,
+        /// Explore search query
+        #[arg(short, long)]
+        query: Option<String>,
+        /// Range start as an RFC3339 UTC timestamp
+        #[arg(long)]
+        start: String,
+        /// Range end as an RFC3339 UTC timestamp
+        #[arg(long)]
+        end: String,
+        /// Maximum rows to return
+        #[arg(short, long, default_value_t = 100)]
+        limit: u32,
+        /// Explore field to return; repeat to override the default fields
+        #[arg(long = "field")]
+        fields: Vec<String>,
+        /// Explore sort expression
+        #[arg(long, default_value = "-timestamp")]
+        sort: String,
+    },
     /// List internal integrations
     Integrations,
     /// Get integration details
@@ -520,6 +543,33 @@ async fn search_project_events(
 }
 
 #[cfg(not(test))]
+async fn search_project_spans(
+    client: &api::Client,
+    project: &str,
+    query: Option<&str>,
+    start: &str,
+    end: &str,
+    limit: u32,
+    fields: &[String],
+    sort: &str,
+) -> Result<()> {
+    validate_event_search(start, end, limit)?;
+    print_json(
+        &client
+            .search_spans(
+                project,
+                query,
+                start,
+                end,
+                limit,
+                (!fields.is_empty()).then_some(fields),
+                sort,
+            )
+            .await?,
+    )
+}
+
+#[cfg(not(test))]
 fn handle_config_command(
     site: Option<&str>,
     org: Option<String>,
@@ -553,6 +603,27 @@ async fn dispatch_client_core(client: &api::Client, command: Commands) -> Result
         Commands::Performance(command) => {
             performance_command::query_and_print(client, command).await?
         }
+        Commands::Spans {
+            project,
+            query,
+            start,
+            end,
+            limit,
+            fields,
+            sort,
+        } => {
+            search_project_spans(
+                client,
+                &project,
+                query.as_deref(),
+                &start,
+                &end,
+                limit,
+                &fields,
+                &sort,
+            )
+            .await?
+        }
         Commands::Monitors { environment } => {
             print_json(&client.list_monitors(environment.as_deref()).await?)?
         }
@@ -582,7 +653,8 @@ async fn dispatch_client_extended(client: &api::Client, command: Commands) -> Re
         | Commands::Monitor { .. }
         | Commands::Config { .. }
         | Commands::Events { .. }
-        | Commands::Performance(_) => unreachable!(),
+        | Commands::Performance(_)
+        | Commands::Spans { .. } => unreachable!(),
     }
     Ok(())
 }
@@ -729,6 +801,67 @@ mod tests {
         assert_eq!(query.as_deref(), Some("user.id:762159"));
         assert_eq!(limit, 100);
         validate_event_search(&start, &end, limit).unwrap();
+    }
+
+    #[test]
+    fn spans_command_accepts_fields_sort_and_defaults() {
+        let cli = Cli::try_parse_from([
+            "sentry",
+            "spans",
+            "web",
+            "--query",
+            "transaction:api/v1/account/username",
+            "--start",
+            "2026-09-04T08:14:30Z",
+            "--end",
+            "2026-09-04T09:14:30+00:00",
+            "--field",
+            "timestamp",
+            "--field",
+            "trace",
+            "--sort",
+            "span.duration",
+        ])
+        .unwrap();
+
+        let Commands::Spans {
+            project,
+            query,
+            start,
+            end,
+            limit,
+            fields,
+            sort,
+        } = cli.command
+        else {
+            panic!("spans command should parse");
+        };
+
+        assert_eq!(project, "web");
+        assert_eq!(
+            query.as_deref(),
+            Some("transaction:api/v1/account/username")
+        );
+        assert_eq!(limit, 100);
+        assert_eq!(fields, ["timestamp", "trace"]);
+        assert_eq!(sort, "span.duration");
+        validate_event_search(&start, &end, limit).unwrap();
+    }
+
+    #[test]
+    fn spans_command_rejects_invalid_ranges_and_limits() {
+        assert!(validate_event_search("not-a-timestamp", "2026-09-04T09:14:30Z", 100).is_err());
+        assert!(
+            validate_event_search("2026-09-04T08:14:30-04:00", "2026-09-04T09:14:30Z", 100)
+                .is_err()
+        );
+        assert!(
+            validate_event_search("2026-09-04T09:14:30Z", "2026-09-04T08:14:30Z", 100).is_err()
+        );
+        assert!(validate_event_search("2026-09-04T08:14:30Z", "2026-09-04T09:14:30Z", 0).is_err());
+        assert!(
+            validate_event_search("2026-09-04T08:14:30Z", "2026-09-04T09:14:30Z", 101).is_err()
+        );
     }
 
     #[test]

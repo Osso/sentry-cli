@@ -63,6 +63,43 @@ sentry events flutter --query 'user.id:762159' --start 2026-08-12T16:27:00Z --en
 
 `issue <id> events` remains the issue-scoped event listing; top-level `events <project>` searches project events by time range and query.
 
+### Span and transaction search
+
+Search individual transaction and child-span rows through Sentry Explore:
+
+```text
+sentry spans <project> [--query <QUERY>] --start <RFC3339-UTC> --end <RFC3339-UTC> [--limit <1..=100>] [--field <FIELD> ...] [--sort <SORT>]
+```
+
+`--start` and `--end` are required UTC timestamps using `Z` or `+00:00`; `--start` must precede `--end`. `--limit` defaults to `100`, accepts `1` through `100`, and `--sort` defaults to `-timestamp`.
+
+Without `--field`, results request these Explore fields: `timestamp`, `transaction`, `trace`, `id`, `span_id`, `span.op`, `span.description`, and `span.duration`. Repeat `--field` to replace that default field set. The raw Explore JSON is printed unchanged: identifiers depend on Sentry's dataset and field availability, so inspect only fields actually returned.
+
+Examples:
+
+```bash
+# Locate sampled username transaction/span rows after a deployment.
+sentry spans web --query 'transaction:api/v1/account/username' \
+  --start 2026-09-03T21:57:55Z --end 2026-09-04T21:57:55Z
+
+# Locate confirmation-token purchase transaction/span rows.
+sentry spans web --query 'transaction:api/v1/releases/:id/purchase-from-confirmation-token' \
+  --start 2026-09-04T08:14:30Z --end 2026-09-05T08:14:30Z
+
+# Request only fields confirmed by a particular Explore query and sort by duration.
+sentry spans web --query 'transaction:api/v1/account/username' \
+  --start 2026-09-03T21:57:55Z --end 2026-09-04T21:57:55Z \
+  --field timestamp --field trace --field id --field span.op --field span.duration \
+  --sort -span.duration
+```
+
+Use returned identifiers without automatic follow-up requests:
+
+```bash
+sentry trace <trace_id>
+sentry event web <event_id>
+```
+
 ### Performance rankings
 
 Rank project transactions by duration through Sentry Explore:
