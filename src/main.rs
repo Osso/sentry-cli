@@ -159,7 +159,7 @@ struct SpanSearchCommand {
     #[arg(long = "field")]
     fields: Vec<String>,
     /// Explore sort expression
-    #[arg(long, default_value = "-timestamp")]
+    #[arg(long, default_value = "-timestamp", allow_hyphen_values = true)]
     sort: String,
 }
 
@@ -808,6 +808,28 @@ mod tests {
         assert_eq!(command.fields, ["timestamp", "trace"]);
         assert_eq!(command.sort, "span.duration");
         validate_event_search(&command.start, &command.end, command.limit).unwrap();
+    }
+
+    #[test]
+    fn spans_command_accepts_descending_hyphenated_sort_value() {
+        let cli = Cli::try_parse_from([
+            "sentry",
+            "spans",
+            "web",
+            "--start",
+            "2026-09-04T08:14:30Z",
+            "--end",
+            "2026-09-04T09:14:30Z",
+            "--sort",
+            "-span.duration",
+        ])
+        .unwrap();
+
+        let Commands::Spans(command) = cli.command else {
+            panic!("spans command should parse");
+        };
+
+        assert_eq!(command.sort, "-span.duration");
     }
 
     #[test]
