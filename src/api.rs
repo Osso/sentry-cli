@@ -21,6 +21,16 @@ const SPAN_SEARCH_FIELDS: [&str; 8] = [
     "span.duration",
 ];
 
+pub struct SpanSearchRequest<'a> {
+    pub project: &'a str,
+    pub query: Option<&'a str>,
+    pub start: &'a str,
+    pub end: &'a str,
+    pub limit: u32,
+    pub fields: Option<&'a [String]>,
+    pub sort: &'a str,
+}
+
 fn event_search_endpoint(
     organization: &str,
     project: &str,
@@ -49,43 +59,38 @@ fn event_search_endpoint(
     endpoint
 }
 
-fn span_search_endpoint(
-    organization: &str,
-    project: &str,
-    query: Option<&str>,
-    start: &str,
-    end: &str,
-    limit: u32,
-    fields: Option<&[String]>,
-    sort: &str,
-) -> String {
+fn span_search_endpoint(organization: &str, request: &SpanSearchRequest<'_>) -> String {
     let mut endpoint = format!(
         "/organizations/{organization}/events/?dataset=spans&project={}",
-        urlencoding::encode(project)
+        urlencoding::encode(request.project)
     );
-    if let Some(query) = query {
+    if let Some(query) = request.query {
         endpoint.push_str("&query=");
         endpoint.push_str(&urlencoding::encode(query));
     }
     endpoint.push_str(&format!(
-        "&start={}&end={}&per_page={limit}&sort={}",
-        urlencoding::encode(start),
-        urlencoding::encode(end),
-        urlencoding::encode(sort),
+        "&start={}&end={}&per_page={}&sort={}",
+        urlencoding::encode(request.start),
+        urlencoding::encode(request.end),
+        request.limit,
+        urlencoding::encode(request.sort),
     ));
+    append_span_search_fields(&mut endpoint, request.fields);
+    endpoint
+}
 
+fn append_span_search_fields(endpoint: &mut String, fields: Option<&[String]>) {
     if let Some(fields) = fields.filter(|fields| !fields.is_empty()) {
         for field in fields {
             endpoint.push_str("&field=");
             endpoint.push_str(&urlencoding::encode(field));
         }
-    } else {
-        for field in SPAN_SEARCH_FIELDS {
-            endpoint.push_str("&field=");
-            endpoint.push_str(field);
-        }
+        return;
     }
-    endpoint
+    for field in SPAN_SEARCH_FIELDS {
+        endpoint.push_str("&field=");
+        endpoint.push_str(field);
+    }
 }
 
 pub struct Client {
@@ -280,27 +285,9 @@ impl Client {
     }
 
     /// Search individual transaction and span rows through Sentry Explore.
-    pub async fn search_spans(
-        &self,
-        project_slug: &str,
-        query: Option<&str>,
-        start: &str,
-        end: &str,
-        limit: u32,
-        fields: Option<&[String]>,
-        sort: &str,
-    ) -> Result<Value> {
-        self.get(&span_search_endpoint(
-            &self.organization,
-            project_slug,
-            query,
-            start,
-            end,
-            limit,
-            fields,
-            sort,
-        ))
-        .await
+    pub async fn search_spans(&self, request: &SpanSearchRequest<'_>) -> Result<Value> {
+        self.get(&span_search_endpoint(&self.organization, request))
+            .await
     }
 
     /// Resolve an issue (accepts short ID like "WEB-81D" or numeric ID)
@@ -672,18 +659,16 @@ pub(super) mod tests {
         let server = MockSentry::start(handler);
         let client = Client::for_test(server.base_url());
 
-        let spans = client
-            .search_spans(
-                "web app",
-                Some("transaction:api/v1/account/username"),
-                "2026-09-04T08:14:30Z",
-                "2026-09-04T09:14:30+00:00",
-                2,
-                None,
-                "-timestamp",
-            )
-            .await
-            .unwrap();
+        let request = SpanSearchRequest {
+            project: "web app",
+            query: Some("transaction:api/v1/account/username"),
+            start: "2026-09-04T08:14:30Z",
+            end: "2026-09-04T09:14:30+00:00",
+            limit: 2,
+            fields: None,
+            sort: "-timestamp",
+        };
+        let spans = client.search_spans(&request).await.unwrap();
 
         assert_eq!(
             spans,
@@ -754,18 +739,16 @@ pub(super) mod tests {
             "transaction.id".to_string(),
         ];
 
-        let spans = client
-            .search_spans(
-                "web",
-                Some("empty:true"),
-                "2026-09-04T08:14:30Z",
-                "2026-09-04T09:14:30Z",
-                25,
-                Some(&fields),
-                "span.duration",
-            )
-            .await
-            .unwrap();
+        let request = SpanSearchRequest {
+            project: "web",
+            query: Some("empty:true"),
+            start: "2026-09-04T08:14:30Z",
+            end: "2026-09-04T09:14:30Z",
+            limit: 25,
+            fields: Some(&fields),
+            sort: "span.duration",
+        };
+        let spans = client.search_spans(&request).await.unwrap();
 
         assert_eq!(
             spans,
@@ -797,18 +780,16 @@ pub(super) mod tests {
         let server = MockSentry::start(handler);
         let client = Client::for_test(server.base_url());
 
-        let error = client
-            .search_spans(
-                "web",
-                Some("fail:spans"),
-                "2026-09-04T08:14:30Z",
-                "2026-09-04T09:14:30Z",
-                10,
-                None,
-                "-timestamp",
-            )
-            .await
-            .unwrap_err();
+        let request = SpanSearchRequest {
+            project: "web",
+            query: Some("fail:spans"),
+            start: "2026-09-04T08:14:30Z",
+            end: "2026-09-04T09:14:30Z",
+            limit: 10,
+            fields: None,
+            sort: "-timestamp",
+        };
+        let error = client.search_spans(&request).await.unwrap_err();
 
         assert!(
             error

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, FixedOffset};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "sentry")]
@@ -90,28 +90,7 @@ enum Commands {
     /// Rank slow project transactions through Sentry Explore
     Performance(performance_command::PerformanceCommand),
     /// Search individual transaction and span rows through Sentry Explore
-    Spans {
-        /// Project slug
-        project: String,
-        /// Explore search query
-        #[arg(short, long)]
-        query: Option<String>,
-        /// Range start as an RFC3339 UTC timestamp
-        #[arg(long)]
-        start: String,
-        /// Range end as an RFC3339 UTC timestamp
-        #[arg(long)]
-        end: String,
-        /// Maximum rows to return
-        #[arg(short, long, default_value_t = 100)]
-        limit: u32,
-        /// Explore field to return; repeat to override the default fields
-        #[arg(long = "field")]
-        fields: Vec<String>,
-        /// Explore sort expression
-        #[arg(long, default_value = "-timestamp")]
-        sort: String,
-    },
+    Spans(SpanSearchCommand),
     /// List internal integrations
     Integrations,
     /// Get integration details
@@ -158,6 +137,30 @@ enum Commands {
         /// Event ID
         event_id: String,
     },
+}
+
+#[derive(Args)]
+struct SpanSearchCommand {
+    /// Project slug
+    project: String,
+    /// Explore search query
+    #[arg(short, long)]
+    query: Option<String>,
+    /// Range start as an RFC3339 UTC timestamp
+    #[arg(long)]
+    start: String,
+    /// Range end as an RFC3339 UTC timestamp
+    #[arg(long)]
+    end: String,
+    /// Maximum rows to return
+    #[arg(short, long, default_value_t = 100)]
+    limit: u32,
+    /// Explore field to return; repeat to override the default fields
+    #[arg(long = "field")]
+    fields: Vec<String>,
+    /// Explore sort expression
+    #[arg(long, default_value = "-timestamp")]
+    sort: String,
 }
 
 #[derive(Subcommand)]
@@ -543,30 +546,18 @@ async fn search_project_events(
 }
 
 #[cfg(not(test))]
-async fn search_project_spans(
-    client: &api::Client,
-    project: &str,
-    query: Option<&str>,
-    start: &str,
-    end: &str,
-    limit: u32,
-    fields: &[String],
-    sort: &str,
-) -> Result<()> {
-    validate_event_search(start, end, limit)?;
-    print_json(
-        &client
-            .search_spans(
-                project,
-                query,
-                start,
-                end,
-                limit,
-                (!fields.is_empty()).then_some(fields),
-                sort,
-            )
-            .await?,
-    )
+async fn search_project_spans(client: &api::Client, command: SpanSearchCommand) -> Result<()> {
+    validate_event_search(&command.start, &command.end, command.limit)?;
+    let request = api::SpanSearchRequest {
+        project: &command.project,
+        query: command.query.as_deref(),
+        start: &command.start,
+        end: &command.end,
+        limit: command.limit,
+        fields: (!command.fields.is_empty()).then_some(command.fields.as_slice()),
+        sort: &command.sort,
+    };
+    print_json(&client.search_spans(&request).await?)
 }
 
 #[cfg(not(test))]
@@ -603,27 +594,7 @@ async fn dispatch_client_core(client: &api::Client, command: Commands) -> Result
         Commands::Performance(command) => {
             performance_command::query_and_print(client, command).await?
         }
-        Commands::Spans {
-            project,
-            query,
-            start,
-            end,
-            limit,
-            fields,
-            sort,
-        } => {
-            search_project_spans(
-                client,
-                &project,
-                query.as_deref(),
-                &start,
-                &end,
-                limit,
-                &fields,
-                &sort,
-            )
-            .await?
-        }
+        Commands::Spans(command) => search_project_spans(client, command).await?,
         Commands::Monitors { environment } => {
             print_json(&client.list_monitors(environment.as_deref()).await?)?
         }
@@ -824,28 +795,19 @@ mod tests {
         ])
         .unwrap();
 
-        let Commands::Spans {
-            project,
-            query,
-            start,
-            end,
-            limit,
-            fields,
-            sort,
-        } = cli.command
-        else {
+        let Commands::Spans(command) = cli.command else {
             panic!("spans command should parse");
         };
 
-        assert_eq!(project, "web");
+        assert_eq!(command.project, "web");
         assert_eq!(
-            query.as_deref(),
+            command.query.as_deref(),
             Some("transaction:api/v1/account/username")
         );
-        assert_eq!(limit, 100);
-        assert_eq!(fields, ["timestamp", "trace"]);
-        assert_eq!(sort, "span.duration");
-        validate_event_search(&start, &end, limit).unwrap();
+        assert_eq!(command.limit, 100);
+        assert_eq!(command.fields, ["timestamp", "trace"]);
+        assert_eq!(command.sort, "span.duration");
+        validate_event_search(&command.start, &command.end, command.limit).unwrap();
     }
 
     #[test]
