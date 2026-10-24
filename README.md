@@ -12,6 +12,10 @@ CLI for Sentry API access.
 cargo install --path .
 ```
 
+### Docker worker clients
+
+`Cargo.lock` pins `webpki-roots` 1.0.10 and `rustls-webpki` 0.103.16. Docker worker builds must consume this lockfile with `--locked` to retain these CA dependency updates; OS CA updates alone do not refresh embedded roots.
+
 ## Setup
 
 ```bash
