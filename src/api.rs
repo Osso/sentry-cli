@@ -386,6 +386,18 @@ impl Client {
         .await
     }
 
+    /// Set a monitor's status ("active" or "disabled")
+    pub async fn set_monitor_status(&self, monitor_slug: &str, status: &str) -> Result<Value> {
+        self.put(
+            &format!(
+                "/organizations/{}/monitors/{}/",
+                self.organization, monitor_slug
+            ),
+            &serde_json::json!({"status": status}),
+        )
+        .await
+    }
+
     /// List internal integrations for the organization
     pub async fn list_integrations(&self) -> Result<Value> {
         self.get(&format!(
@@ -851,6 +863,10 @@ pub(super) mod tests {
             3
         );
         assert_eq!(
+            client.set_monitor_status("daily", "active").await.unwrap()["status"],
+            "active"
+        );
+        assert_eq!(
             client.delete_monitor("daily").await.unwrap(),
             reqwest::StatusCode::NO_CONTENT
         );
@@ -961,7 +977,9 @@ pub(super) mod tests {
         if line.starts_with("GET /api/0/projects/test-org/web/issues/") {
             return Some(("200 OK", list_issues_response(line)));
         }
-        if line.starts_with("PUT /api/0/issues/1001/") {
+        if line.starts_with("PUT /api/0/issues/1001/")
+            || line.starts_with("PUT /api/0/organizations/test-org/monitors/daily/")
+        {
             return Some(("200 OK", status_response(body)));
         }
         None

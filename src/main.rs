@@ -202,6 +202,10 @@ enum MonitorCommands {
     },
     /// Delete this monitor
     Delete,
+    /// Enable this monitor (accept check-ins)
+    Enable,
+    /// Disable this monitor (drop check-ins)
+    Disable,
 }
 
 /// Parse a duration string like "30d", "7d", "24h", "60m" into minutes
@@ -694,6 +698,14 @@ async fn handle_monitor_command(
         Some(MonitorCommands::Delete) => {
             client.delete_monitor(slug).await?;
             println!("Monitor '{}' deleted successfully.", slug);
+        }
+        Some(MonitorCommands::Enable) => {
+            client.set_monitor_status(slug, "active").await?;
+            println!("Monitor '{}' enabled.", slug);
+        }
+        Some(MonitorCommands::Disable) => {
+            client.set_monitor_status(slug, "disabled").await?;
+            println!("Monitor '{}' disabled.", slug);
         }
     }
     Ok(())
